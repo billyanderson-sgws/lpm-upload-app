@@ -208,7 +208,7 @@ def load_collection_lookup(collection_path, state):
     """
     Build a dict mapping lowercase sheet/group name -> collection ID for the given state.
     Uses the 'Collection ID List' sheet. Skips any collection name containing '(do not use)'.
-    Matches by looking for 'CI - <STATE> - SPP - <name>' pattern.
+    Matches by looking for 'CI - <STATE> SPP - <name>' pattern.
     """
     lookup = {}
     if not collection_path or not os.path.isfile(collection_path):
@@ -219,7 +219,9 @@ def load_collection_lookup(collection_path, state):
         return lookup
 
     ws = wb["Collection ID List"]
-    prefix = f"CI - {state.upper()} - SPP - "
+    # Support both "CI - SD SPP - Name" and "CI - SD - SPP - Name" formats
+    prefix_a = f"CI - {state.upper()} SPP - "
+    prefix_b = f"CI - {state.upper()} - SPP - "
 
     for row in ws.iter_rows(min_row=2, values_only=True):
         row_state, name, coll_id = (row[0] or ""), (row[1] or ""), (row[2] or "")
@@ -228,8 +230,12 @@ def load_collection_lookup(collection_path, state):
         name = str(name).strip()
         if "(do not use)" in name.lower():
             continue
-        if name.upper().startswith(prefix.upper()):
-            group_name = name[len(prefix):].strip().lower()
+        name_upper = name.upper()
+        if name_upper.startswith(prefix_a.upper()):
+            group_name = name[len(prefix_a):].strip().lower()
+            lookup[group_name] = str(coll_id).strip()
+        elif name_upper.startswith(prefix_b.upper()):
+            group_name = name[len(prefix_b):].strip().lower()
             lookup[group_name] = str(coll_id).strip()
 
     wb.close()
