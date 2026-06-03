@@ -8,6 +8,7 @@ Run with:
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 import streamlit as st
 
@@ -27,10 +28,8 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # Bundled collection report path (committed alongside the app)
 # ---------------------------------------------------------------------------
-BUNDLED_COLLECTION = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "LPM Salesforce and Overlay Collection Report.xlsx",
-)
+_APP_DIR = Path(__file__).resolve().parent
+BUNDLED_COLLECTION = str(_APP_DIR / "LPM Salesforce and Overlay Collection Report.xlsx")
 
 # ---------------------------------------------------------------------------
 # Sidebar — instructions
@@ -103,8 +102,12 @@ if generate_clicked and goal_builder_file is not None:
                     coll_path = os.path.join(tmpdir, collection_file.name)
                     with open(coll_path, "wb") as f:
                         f.write(collection_file.getvalue())
-                elif os.path.isfile(BUNDLED_COLLECTION):
+                    coll_source = f"uploaded: {collection_file.name}"
+                elif Path(BUNDLED_COLLECTION).is_file():
                     coll_path = BUNDLED_COLLECTION
+                    coll_source = "bundled collection report"
+                else:
+                    coll_source = f"NOT FOUND at {BUNDLED_COLLECTION}"
 
                 output_path  = os.path.join(tmpdir, "lpm_upload.csv")
                 skipped_path = os.path.join(tmpdir, "lpm_skipped.csv")
@@ -142,6 +145,8 @@ if generate_clicked and goal_builder_file is not None:
                     for name, cid in sorted(gen.COLLECTION_LOOKUP.items())
                 ]
 
+            st.session_state.coll_source = coll_source
+
             st.session_state.result = {
                 "error":           None,
                 "state":           state,
@@ -169,6 +174,11 @@ if result:
         st.error(f"**Error:** {result['error']}")
 
     else:
+        # Show which collection source was used
+        coll_source = st.session_state.get("coll_source", "")
+        if coll_source:
+            st.caption(f"Collection source: {coll_source}")
+
         # Collection ID summary
         if result["collection_info"]:
             with st.expander(
