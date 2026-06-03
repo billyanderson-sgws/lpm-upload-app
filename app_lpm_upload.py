@@ -55,16 +55,30 @@ def extract_goal_groups(xlsm_bytes):
         os.unlink(tmp)
 
 
+def _cell_str(cell):
+    """Read a cell value as string without float64 precision loss."""
+    try:
+        raw = cell._value
+    except AttributeError:
+        raw = cell.value
+    if raw is None:
+        return ""
+    if isinstance(raw, float):
+        raw = f"{raw:.0f}"
+    return str(raw).strip()
+
+
 def get_state_collections(state, source):
     """
     Return {display_name: collection_id} for the given state from the Collection ID List sheet.
     source: file path string or bytes.
+    Reads IDs as raw strings to avoid float64 precision loss on 16-digit IDs.
     """
     try:
         if isinstance(source, (bytes, bytearray)):
-            wb = openpyxl.load_workbook(io.BytesIO(source), data_only=True, read_only=True)
+            wb = openpyxl.load_workbook(io.BytesIO(source), data_only=True, read_only=False)
         elif source and Path(str(source)).is_file():
-            wb = openpyxl.load_workbook(str(source), data_only=True, read_only=True)
+            wb = openpyxl.load_workbook(str(source), data_only=True, read_only=False)
         else:
             return {}
     except Exception:
@@ -76,11 +90,10 @@ def get_state_collections(state, source):
 
     ws = wb["Collection ID List"]
     result = {}
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        row_state = str(row[0] or "").strip().upper()
-        name      = str(row[1] or "").strip()
-        raw_cid   = row[2]
-        cid       = str(int(raw_cid)) if isinstance(raw_cid, float) else str(raw_cid or "").strip()
+    for row in ws.iter_rows(min_row=2):
+        row_state = str(row[0].value or "").strip().upper()
+        name      = str(row[1].value or "").strip()
+        cid       = _cell_str(row[2])
         if row_state != state.upper():
             continue
         if not name or not cid:

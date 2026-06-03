@@ -204,28 +204,54 @@ def derive_state_from_filename(filepath):
     return name.split()[0].upper()
 
 
+def _read_cell_as_string(cell):
+    """
+    Return the cell value as a string without any float conversion.
+    For numeric cells, reads the raw XML value (avoids float64 precision loss
+    on 16-digit collection IDs like 4844571982686355).
+    """
+    # read_only cells expose the raw string via .value when data_only=True,
+    # but standard cells may return float. Use the internal _value for safety.
+    raw = None
+    try:
+        # openpyxl stores the uncoerced string in cell._value for read-only ws
+        raw = cell._value
+    except AttributeError:
+        raw = cell.value
+
+    if raw is None:
+        return ""
+    # If it came through as float anyway, re-derive from the raw XML decimal string
+    if isinstance(raw, float):
+        # Format with no decimal places to recover the integer exactly
+        # (only safe when the original is truly an integer stored as float)
+        raw = f"{raw:.0f}"
+    return str(raw).strip()
+
+
 def load_collection_lookup(collection_path, state):
     """
-    Build a dict mapping lowercase goal group name -> collection ID for the given state.
+    Build a dict mapping lowercase collection name -> collection ID for the given state.
     Uses the 'Collection ID List' sheet. Skips entries with '(do not use)'.
-    Keyed by the full collection name (lowercase) for direct lookup by the app dropdowns.
+    Reads collection IDs as raw strings to avoid float64 precision loss.
     """
     lookup = {}
     if not collection_path or not os.path.isfile(collection_path):
         return lookup
 
-    wb = openpyxl.load_workbook(collection_path, data_only=True, read_only=True)
+    # Use read_only=False so cell._value is accessible and numeric cells
+    # are not pre-converted to float by the read-only streaming parser.
+    wb = openpyxl.load_workbook(collection_path, data_only=True, read_only=False)
     if "Collection ID List" not in wb.sheetnames:
         wb.close()
         return lookup
 
     ws = wb["Collection ID List"]
 
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        row_state = str(row[0] or "").strip().upper()
-        name      = str(row[1] or "").strip()
-        raw_cid   = row[2]
-        coll_id   = str(int(raw_cid)) if isinstance(raw_cid, float) else str(raw_cid or "").strip()
+    for row in ws.iter_rows(min_row=2):
+        row_state = str(row[0].value or "").strip().upper()
+        name      = str(row[1].value or "").strip()
+        coll_id   = _read_cell_as_string(row[2])
 
         if row_state != state.upper():
             continue
