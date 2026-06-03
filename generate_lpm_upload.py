@@ -204,54 +204,98 @@ def derive_state_from_filename(filepath):
     return name.split()[0].upper()
 
 
-def _read_cell_as_string(cell):
+def _parse_collection_sheet_raw(file_source, state):
     """
-    Return the cell value as a string without any float conversion.
-    For numeric cells, reads the raw XML value (avoids float64 precision loss
-    on 16-digit collection IDs like 4844571982686355).
-    """
-    # read_only cells expose the raw string via .value when data_only=True,
-    # but standard cells may return float. Use the internal _value for safety.
-    raw = None
-    try:
-        # openpyxl stores the uncoerced string in cell._value for read-only ws
-        raw = cell._value
-    except AttributeError:
-        raw = cell.value
+    Parse the 'Collection ID List' sheet by reading the raw XML inside the xlsx zip.
+    This avoids openpyxl's float conversion entirely, preserving all 16 digits of
+    collection IDs.
 
-    if raw is None:
-        return ""
-    # If it came through as float anyway, re-derive from the raw XML decimal string
-    if isinstance(raw, float):
-        # Format with no decimal places to recover the integer exactly
-        # (only safe when the original is truly an integer stored as float)
-        raw = f"{raw:.0f}"
-    return str(raw).strip()
-
-
-def load_collection_lookup(collection_path, state):
+    Returns {lowercase_name: id_string}
     """
-    Build a dict mapping lowercase collection name -> collection ID for the given state.
-    Uses the 'Collection ID List' sheet. Skips entries with '(do not use)'.
-    Reads collection IDs as raw strings to avoid float64 precision loss.
-    """
+    import zipfile
+    import xml.etree.ElementTree as ET
+    import io as _io
+
+    NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+
+    # Accept a file path or bytes
+    if isinstance(file_source, (bytes, bytearray)):
+        zf = zipfile.ZipFile(_io.BytesIO(file_source))
+    else:
+        zf = zipfile.ZipFile(file_source)
+
+    # Map sheet name -> actual file path via workbook.xml + workbook.xml.rels
+    with zf.open("xl/workbook.xml") as f:
+        wb_tree = ET.parse(f)
+
+    # rId -> sheet name
+    rid_to_name = {}
+    REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    for sheet in wb_tree.findall(f".//{{{NS}}}sheet"):
+        rid = sheet.get(f"{{{REL_NS}}}id")
+        rid_to_name[rid] = sheet.get("name")
+
+    # rId -> actual file path from relationships file
+    rid_to_path = {}
+    rels_path = "xl/_rels/workbook.xml.rels"
+    if rels_path in zf.namelist():
+        with zf.open(rels_path) as f:
+            rels_tree = ET.parse(f)
+        RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+        for rel in rels_tree.findall(f"{{{RELS_NS}}}Relationship"):
+            rid_to_path[rel.get("Id")] = "xl/" + rel.get("Target").lstrip("/")
+
+    target_name = "Collection ID List"
+    candidate = None
+    for rid, name in rid_to_name.items():
+        if name == target_name:
+            candidate = rid_to_path.get(rid)
+            break
+
+    if not candidate or candidate not in zf.namelist():
+        zf.close()
+        return {}
+
+    # Read shared strings table
+    shared_strings = []
+    if "xl/sharedStrings.xml" in zf.namelist():
+        with zf.open("xl/sharedStrings.xml") as f:
+            ss_tree = ET.parse(f)
+        for si in ss_tree.findall(f"{{{NS}}}si"):
+            parts = si.findall(f".//{{{NS}}}t")
+            shared_strings.append("".join(p.text or "" for p in parts))
+
+    def cell_value(c_elem):
+        t = c_elem.get("t", "n")
+        v_elem = c_elem.find(f"{{{NS}}}v")
+        if v_elem is None or v_elem.text is None:
+            return ""
+        if t == "s":
+            idx = int(v_elem.text)
+            return shared_strings[idx] if idx < len(shared_strings) else ""
+        return v_elem.text.strip()
+
     lookup = {}
-    if not collection_path or not os.path.isfile(collection_path):
-        return lookup
 
-    # Use read_only=False so cell._value is accessible and numeric cells
-    # are not pre-converted to float by the read-only streaming parser.
-    wb = openpyxl.load_workbook(collection_path, data_only=True, read_only=False)
-    if "Collection ID List" not in wb.sheetnames:
-        wb.close()
-        return lookup
+    with zf.open(candidate) as f:
+        ws_tree = ET.parse(f)
 
-    ws = wb["Collection ID List"]
+    rows = ws_tree.findall(f".//{{{NS}}}row")
+    for row_elem in rows:
+        r_num = int(row_elem.get("r", 0))
+        if r_num < 2:
+            continue
+        cells = row_elem.findall(f"{{{NS}}}c")
+        # Map column letter -> value
+        col_vals = {}
+        for c in cells:
+            ref = c.get("r", "")
+            col_letter = "".join(ch for ch in ref if ch.isalpha()).upper()
+            col_vals[col_letter] = cell_value(c)
 
-    for row in ws.iter_rows(min_row=2):
-        row_state = str(row[0].value or "").strip().upper()
-        name      = str(row[1].value or "").strip()
-        coll_id   = _read_cell_as_string(row[2])
+        row_state = col_vals.get("A", "").strip().upper()
+        name      = col_vals.get("B", "").strip()
+        coll_id   = col_vals.get("C", "").strip()
 
         if row_state != state.upper():
             continue
@@ -260,9 +304,24 @@ def load_collection_lookup(collection_path, state):
         if "(do not use)" in name.lower():
             continue
 
+        # Strip trailing .0 if the ID came through as "4844571982686355.0"
+        if coll_id.endswith(".0"):
+            coll_id = coll_id[:-2]
+
         lookup[name.lower()] = coll_id
 
-    wb.close()
+    zf.close()
+    return lookup
+
+
+def load_collection_lookup(collection_path, state):
+    """
+    Build a dict mapping lowercase collection name -> collection ID for the given state.
+    Reads raw XML from the xlsx zip to avoid openpyxl float64 precision loss.
+    """
+    if not collection_path or not os.path.isfile(collection_path):
+        return {}
+    return _parse_collection_sheet_raw(collection_path, state)
     return lookup
 
 

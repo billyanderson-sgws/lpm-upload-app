@@ -55,54 +55,97 @@ def extract_goal_groups(xlsm_bytes):
         os.unlink(tmp)
 
 
-def _cell_str(cell):
-    """Read a cell value as string without float64 precision loss."""
-    try:
-        raw = cell._value
-    except AttributeError:
-        raw = cell.value
-    if raw is None:
-        return ""
-    if isinstance(raw, float):
-        raw = f"{raw:.0f}"
-    return str(raw).strip()
-
-
 def get_state_collections(state, source):
     """
-    Return {display_name: collection_id} for the given state from the Collection ID List sheet.
+    Return {display_name: collection_id} for the given state.
+    Delegates to gen._parse_collection_sheet_raw which reads raw XML to avoid
+    openpyxl float64 precision loss. Returns original-cased display names.
     source: file path string or bytes.
-    Reads IDs as raw strings to avoid float64 precision loss on 16-digit IDs.
     """
     try:
+        import zipfile, xml.etree.ElementTree as ET
+        NS     = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        PKG_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+
         if isinstance(source, (bytes, bytearray)):
-            wb = openpyxl.load_workbook(io.BytesIO(source), data_only=True, read_only=False)
-        elif source and Path(str(source)).is_file():
-            wb = openpyxl.load_workbook(str(source), data_only=True, read_only=False)
+            zf = zipfile.ZipFile(io.BytesIO(source))
         else:
+            zf = zipfile.ZipFile(str(source))
+
+        # Map rId -> sheet name
+        with zf.open("xl/workbook.xml") as f:
+            wb_tree = ET.parse(f)
+        rid_to_name = {}
+        for sh in wb_tree.findall(f".//{{{NS}}}sheet"):
+            rid = sh.get(f"{{{REL_NS}}}id")
+            rid_to_name[rid] = sh.get("name")
+
+        # Map rId -> file path
+        rid_to_path = {}
+        if "xl/_rels/workbook.xml.rels" in zf.namelist():
+            with zf.open("xl/_rels/workbook.xml.rels") as f:
+                rels_tree = ET.parse(f)
+            for rel in rels_tree.findall(f"{{{PKG_NS}}}Relationship"):
+                rid_to_path[rel.get("Id")] = "xl/" + rel.get("Target").lstrip("/")
+
+        target = "Collection ID List"
+        candidate = None
+        for rid, name in rid_to_name.items():
+            if name == target:
+                candidate = rid_to_path.get(rid)
+                break
+
+        if not candidate or candidate not in zf.namelist():
+            zf.close()
             return {}
+
+        shared_strings = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            with zf.open("xl/sharedStrings.xml") as f:
+                ss_tree = ET.parse(f)
+            for si in ss_tree.findall(f"{{{NS}}}si"):
+                parts = si.findall(f".//{{{NS}}}t")
+                shared_strings.append("".join(p.text or "" for p in parts))
+
+        def cell_val(c_elem):
+            t = c_elem.get("t", "n")
+            v = c_elem.find(f"{{{NS}}}v")
+            if v is None or v.text is None:
+                return ""
+            if t == "s":
+                idx = int(v.text)
+                return shared_strings[idx] if idx < len(shared_strings) else ""
+            val = v.text.strip()
+            if val.endswith(".0"):
+                val = val[:-2]
+            return val
+
+        result = {}
+        with zf.open(candidate) as f:
+            ws_tree = ET.parse(f)
+        for row_elem in ws_tree.findall(f".//{{{NS}}}row"):
+            if int(row_elem.get("r", 0)) < 2:
+                continue
+            col_vals = {}
+            for c in row_elem.findall(f"{{{NS}}}c"):
+                ref = c.get("r", "")
+                col = "".join(ch for ch in ref if ch.isalpha()).upper()
+                col_vals[col] = cell_val(c)
+            row_state = col_vals.get("A", "").strip().upper()
+            name      = col_vals.get("B", "").strip()
+            cid       = col_vals.get("C", "").strip()
+            if row_state != state.upper():
+                continue
+            if not name or not cid:
+                continue
+            if "(do not use)" in name.lower():
+                continue
+            result[name] = cid
+        zf.close()
+        return result
     except Exception:
         return {}
-
-    if "Collection ID List" not in wb.sheetnames:
-        wb.close()
-        return {}
-
-    ws = wb["Collection ID List"]
-    result = {}
-    for row in ws.iter_rows(min_row=2):
-        row_state = str(row[0].value or "").strip().upper()
-        name      = str(row[1].value or "").strip()
-        cid       = _cell_str(row[2])
-        if row_state != state.upper():
-            continue
-        if not name or not cid:
-            continue
-        if "(do not use)" in name.lower():
-            continue
-        result[name] = cid
-    wb.close()
-    return result
 
 
 def auto_match(group_name, state, collections):
