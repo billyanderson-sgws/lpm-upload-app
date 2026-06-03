@@ -119,8 +119,10 @@ if generate_clicked and goal_builder_file is not None:
                 state = gen.derive_state_from_filename(gb_path)
                 if coll_path:
                     gen.COLLECTION_LOOKUP = gen.load_collection_lookup(coll_path, state)
+                    coll_source += f" | state={state} | {len(gen.COLLECTION_LOOKUP)} IDs found"
                 else:
                     gen.COLLECTION_LOOKUP = {}
+                    coll_source += " | coll_path was None"
 
                 # Parse and generate
                 records, skipped, header_row = gen.load_tracking_table(gb_path)
