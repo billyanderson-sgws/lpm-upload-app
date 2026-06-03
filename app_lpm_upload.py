@@ -220,12 +220,18 @@ if goal_builder_file:
     state = gen.derive_state_from_filename(goal_builder_file.name)
 
     # Determine collection source
-    coll_source = (
-        collection_file.getvalue() if collection_file
-        else BUNDLED_COLLECTION if Path(BUNDLED_COLLECTION).is_file()
-        else None
-    )
+    if collection_file:
+        coll_source = collection_file.getvalue()
+        coll_source_label = f"Uploaded: {collection_file.name}"
+    elif Path(BUNDLED_COLLECTION).is_file():
+        coll_source = BUNDLED_COLLECTION
+        coll_source_label = f"Bundled: {Path(BUNDLED_COLLECTION).name}"
+    else:
+        coll_source = None
+        coll_source_label = "No collection report found"
+
     collections = get_state_collections(state, coll_source) if coll_source else {}
+    st.caption(f"Collection report: {coll_source_label}")
 
     # Parse goal groups once and cache in session state
     if st.session_state.get("goal_groups") is None:
