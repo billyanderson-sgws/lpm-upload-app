@@ -5,10 +5,13 @@ Reads the "Tracking Table" sheet from a Goal Builder .xlsm file and generates
 LPM-format CSV files ready for upload to LiquidPerform.
 
 Usage:
-    python generate_lpm_upload.py <goal_builder.xlsm> [output_dir]
+    python generate_lpm_upload.py <goal_builder.xlsm> [output_csv] [collection_report.xlsx]
 
 One CSV is generated per tracker group. Trackers are grouped by:
     Goal Group + SPP Tier + Objective Type + Program Period (Start/End) + Unsold Period
+
+State abbreviation is derived from the Goal Builder filename (e.g. "SD SPP..." -> "SD").
+Collection IDs are looked up from the Collection ID List sheet in the collection report.
 """
 
 import csv
@@ -42,7 +45,7 @@ CONFIG = {
 OBJECTIVE_TYPE_MAP = {
     "Volume (Cases)": "VolumeCases",
     "New POD":        "DistributionNewPODs",
-    "POD":            "DistributionACS",
+    "POD":            "DistributionPODs",
     "New ACS":        "DistributionNewACS",
     "ACS":            "DistributionACS",
     "Revenue":        "VolumeRevenue",
@@ -53,11 +56,12 @@ OBJECTIVE_TYPE_MAP = {
 TRACKER_TYPE_LABELS = {
     "VolumeCases":         "Vol",
     "DistributionNewPODs": "NPOD",
-    "DistributionACS":     "POD",
+    "DistributionPODs":    "POD",
     "DistributionNewACS":  "NACS",
+    "DistributionACS":     "ACS",
 }
 
-DISTRIBUTION_TYPES = {"DistributionNewPODs", "DistributionACS", "DistributionNewACS"}
+DISTRIBUTION_TYPES = {"DistributionNewPODs", "DistributionPODs", "DistributionACS", "DistributionNewACS"}
 
 # Tracking Table "Measure" (col 10) -> LPM goal_uom
 UOM_MAP = {
@@ -74,7 +78,7 @@ PROGRAM_CLASS_MAP = {
 }
 
 # Objective types and measures to skip entirely
-SKIP_OBJECTIVE_TYPES = {"SPP My Sales"}
+SKIP_OBJECTIVE_TYPES = {"SPP My Sales", "Proof Comm Invoice Freq"}
 SKIP_MEASURES        = {"DigComRev"}
 
 # LPM CSV column order (must match upload spec)
@@ -145,9 +149,30 @@ def _numeric_str(val):
         return m.group(1) if m else ""
 
 
+VALID_DIST_GOAL_FROM = {
+    "Org", "Corporate", "Region", "State", "Site",
+    "Market", "Section", "Territory", "Team", "Salesperson",
+}
+
+VALID_POD_ATTRIBUTES = {
+    "PhSubGroup", "VarietalSize", "Flavor", "PhSuperGroup", "PhGroup",
+    "PodId", "PodName", "ProductId", "ProductSize", "SubgroupSize",
+    "FlavorSize", "ItemDescVintageRoll",
+}
+
+POD_ATTRIBUTE_MAP = {
+    "item roll size (vintage trim)/pim item": "ItemDescVintageRoll",
+}
+
 def normalize_pod_attribute(val):
     s = safe_str(val)
-    return "" if s == "-" else s
+    if not s or s == "-":
+        return ""
+    # Apply known aliases first
+    mapped = POD_ATTRIBUTE_MAP.get(s.lower())
+    if mapped:
+        return mapped
+    return s
 
 
 def ptg_name_from_row(ptg_name_col, selection_col, supplier_col):
@@ -166,6 +191,49 @@ def safe_filename(s):
     for ch in r'\/:*?"<>| ':
         s = s.replace(ch, "_")
     return s
+
+
+# ---------------------------------------------------------------------------
+# Collection ID lookup
+# ---------------------------------------------------------------------------
+
+def derive_state_from_filename(filepath):
+    """Extract state abbreviation from the Goal Builder filename e.g. 'SD SPP...' -> 'SD'."""
+    name = os.path.splitext(os.path.basename(filepath))[0]
+    # First token before a space is the state abbreviation
+    return name.split()[0].upper()
+
+
+def load_collection_lookup(collection_path, state):
+    """
+    Build a dict mapping lowercase sheet/group name -> collection ID for the given state.
+    Uses the 'Collection ID List' sheet. Skips any collection name containing '(do not use)'.
+    Matches by looking for 'CI - <STATE> - SPP - <name>' pattern.
+    """
+    lookup = {}
+    if not collection_path or not os.path.isfile(collection_path):
+        return lookup
+
+    wb = openpyxl.load_workbook(collection_path, data_only=True, read_only=True)
+    if "Collection ID List" not in wb.sheetnames:
+        return lookup
+
+    ws = wb["Collection ID List"]
+    prefix = f"CI - {state.upper()} - SPP - "
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        row_state, name, coll_id = (row[0] or ""), (row[1] or ""), (row[2] or "")
+        if str(row_state).strip().upper() != state.upper():
+            continue
+        name = str(name).strip()
+        if "(do not use)" in name.lower():
+            continue
+        if name.upper().startswith(prefix.upper()):
+            group_name = name[len(prefix):].strip().lower()
+            lookup[group_name] = str(coll_id).strip()
+
+    wb.close()
+    return lookup
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +280,12 @@ def load_tracking_table(wb_path):
         ptg_name_v  = cv(12)
         level_detail = safe_str(cv(13))
         supplier    = cv(14)
-        selection   = cv(15)
-        # cols 16-22 not used
-        min_cases   = cv(23)
-        # col 24 not used
-        pod_attr    = cv(25)
+        selection       = cv(15)
+        # cols 16-20 not used
+        qualifier       = cv(21)  # Qualifier -> achievement_min (numeric only)
+        min_goal_per_rep = cv(22) # Min Goal per Rep -> min_objective_target
+        # col 23 = Min Cases, col 24 = Min Facings (not used)
+        pod_attr        = cv(25)
         # col 26 not used
 
         raw_row = [ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
@@ -233,8 +302,9 @@ def load_tracking_table(wb_path):
         if goal_bucket == "Select:" and not obj_type:
             continue
 
-        # Skip SPP My Sales rows (no logging)
+        # Skip known objective types — log for prompt callout
         if obj_type in SKIP_OBJECTIVE_TYPES:
+            skipped.append(make_skip(r, f"skipped objective type: {obj_type!r}", raw_row))
             continue
 
         # Map objective type
@@ -251,14 +321,23 @@ def load_tracking_table(wb_path):
             skipped.append(make_skip(r, "no PTG name, selection, or supplier", raw_row))
             continue
 
-        # Map UOM; distribution types default to Cases if measure is blank
-        goal_uom = UOM_MAP.get(measure, "")
-        if not goal_uom and goal_type in DISTRIBUTION_TYPES:
-            goal_uom = "Cases"
+        # Map UOM; revenue/GP types always blank; distribution types default to Cases
+        if goal_type in {"VolumeRevenue", "VolumeRevenueDREV", "VolumeGP"}:
+            goal_uom = ""
+        else:
+            goal_uom = UOM_MAP.get(measure, "")
+            if not goal_uom and goal_type in DISTRIBUTION_TYPES:
+                goal_uom = "Cases"
 
         # Dates
         start_yyyymm = to_yyyymm(start_raw)
         end_yyyymm   = to_yyyymm(end_raw) or start_yyyymm
+
+        # Validate POD attribute
+        pod_attr_clean = normalize_pod_attribute(pod_attr)
+        if pod_attr_clean and pod_attr_clean not in VALID_POD_ATTRIBUTES:
+            skipped.append(make_skip(r, f"invalid POD attribute: {pod_attr_clean!r}", raw_row))
+            continue
 
         records.append({
             "row_num":       r,
@@ -271,9 +350,10 @@ def load_tracking_table(wb_path):
             "end_yyyymm":    end_yyyymm,
             "unsold_prd":    unsold_prd,
             "ptg_name":      name,
-            "mkt_seg_goal":  _numeric_str(mkt_seg),
-            "pod_attribute": normalize_pod_attribute(pod_attr),
-            "min_cases":     safe_str(min_cases),
+            "mkt_seg_goal":       _numeric_str(mkt_seg),
+            "pod_attribute":      pod_attr_clean,
+            "min_goal_per_rep":   _numeric_str(min_goal_per_rep),
+            "qualifier":          _numeric_str(qualifier),
         })
 
     return records, skipped, header_row
@@ -309,6 +389,9 @@ def group_records(records):
 # Build CSV rows
 # ---------------------------------------------------------------------------
 
+COLLECTION_LOOKUP = {}  # populated in main() after loading the collection file
+
+
 def build_tracker_row(key, recs):
     goal_group, spp_tier, goal_type, start, end, unsold_prd = key
 
@@ -340,7 +423,7 @@ def build_tracker_row(key, recs):
         "goal_uom":                       goal_uom,
         "recalculate_until_date":         CONFIG["recalculate_until_date"],
         "exclude_from_os_sales_reports":  CONFIG["exclude_from_os_sales_reports"],
-        "salesforce_collection_ids":      CONFIG["salesforce_collection_ids"],
+        "salesforce_collection_ids":      COLLECTION_LOOKUP.get(goal_group.lower(), CONFIG["salesforce_collection_ids"]),
         "program_class":                  program_class,
         "send_to_proof":                  CONFIG["send_to_proof"],
         "send_to_proof_date":             CONFIG["send_to_proof_date"],
@@ -381,10 +464,10 @@ def build_ptg_row(rec):
         "product_collection_id":          "",
         "customer_collection_id":         "",
         "distribution_target":            rec["mkt_seg_goal"],
-        "min_objective_target":           rec["min_cases"],
+        "min_objective_target":           rec["min_goal_per_rep"] or "1",
         "distribution_level_path":        CONFIG["distribution_level_path"],
         "pod_attribute":                  rec["pod_attribute"],
-        "achievement_min":                "1",
+        "achievement_min":                rec["qualifier"],
     }
 
 
@@ -454,7 +537,7 @@ def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped
 def main():
     if len(sys.argv) < 2:
         print(
-            "Usage: python generate_lpm_upload.py <goal_builder.xlsm> [output_dir]",
+            "Usage: python generate_lpm_upload.py <goal_builder.xlsm> [output.csv] [collection_report.xlsx]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -471,8 +554,30 @@ def main():
         base = os.path.splitext(os.path.abspath(input_path))[0]
         output_path = base + "_lpm_upload.csv"
 
+    # Optional collection report
+    collection_path = sys.argv[3] if len(sys.argv) >= 4 else None
+
+    # Auto-detect collection report in same folder if not provided
+    if not collection_path:
+        folder = os.path.dirname(os.path.abspath(input_path))
+        import glob as _glob
+        candidates = _glob.glob(os.path.join(folder, "*Collection*Report*.xlsx"))
+        if candidates:
+            collection_path = candidates[0]
+
     base = os.path.splitext(output_path)[0]
     skipped_path = base + "_skipped.csv"
+
+    # Load collection ID lookup
+    global COLLECTION_LOOKUP
+    state = derive_state_from_filename(input_path)
+    if collection_path and os.path.isfile(collection_path):
+        COLLECTION_LOOKUP = load_collection_lookup(collection_path, state)
+        print(f"State: {state}  |  Collection IDs loaded: {len(COLLECTION_LOOKUP)}  ({os.path.basename(collection_path)})")
+        for name, cid in sorted(COLLECTION_LOOKUP.items()):
+            print(f"  {name} -> {cid}")
+    else:
+        print(f"State: {state}  |  No collection report found — salesforce_collection_ids will be blank.")
 
     print(f"Reading: {input_path}")
     records, skipped, header_row = load_tracking_table(input_path)
