@@ -91,6 +91,23 @@ def get_state_collections(state, source):
     return result
 
 
+def auto_match(group_name, state, collections):
+    """
+    Pre-select a collection for a goal group using the CI prefix pattern.
+    Tries 'CI - {STATE} SPP - {group}' then 'CI - {STATE} - SPP - {group}'.
+    Falls back to None if no match found.
+    """
+    candidates = [
+        f"CI - {state.upper()} SPP - {group_name}",
+        f"CI - {state.upper()} - SPP - {group_name}",
+    ]
+    for candidate in candidates:
+        for cname in collections:
+            if cname.lower() == candidate.lower():
+                return cname
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -170,10 +187,12 @@ if goal_builder_file:
             manual_mapping = {}
 
             for group in goal_groups:
+                best = auto_match(group, state, collections)
+                default_idx = options.index(best) if best and best in options else 0
                 selected = st.selectbox(
                     group,
                     options,
-                    index=0,
+                    index=default_idx,
                     key=f"cmap_{group}",
                 )
                 if selected != "(none)":
