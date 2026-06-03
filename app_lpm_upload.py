@@ -79,7 +79,8 @@ def get_state_collections(state, source):
     for row in ws.iter_rows(min_row=2, values_only=True):
         row_state = str(row[0] or "").strip().upper()
         name      = str(row[1] or "").strip()
-        cid       = str(row[2] or "").strip()
+        raw_cid   = row[2]
+        cid       = str(int(raw_cid)) if isinstance(raw_cid, float) else str(raw_cid or "").strip()
         if row_state != state.upper():
             continue
         if not name or not cid:

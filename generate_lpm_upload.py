@@ -224,7 +224,8 @@ def load_collection_lookup(collection_path, state):
     for row in ws.iter_rows(min_row=2, values_only=True):
         row_state = str(row[0] or "").strip().upper()
         name      = str(row[1] or "").strip()
-        coll_id   = str(row[2] or "").strip()
+        raw_cid   = row[2]
+        coll_id   = str(int(raw_cid)) if isinstance(raw_cid, float) else str(raw_cid or "").strip()
 
         if row_state != state.upper():
             continue
