@@ -25,19 +25,30 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# Bundled collection report path (committed alongside the app)
+# ---------------------------------------------------------------------------
+BUNDLED_COLLECTION = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "LPM Salesforce and Overlay Collection Report.xlsx",
+)
+
+# ---------------------------------------------------------------------------
 # Sidebar — instructions
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("How to use")
     st.markdown("""
 1. Upload your **Goal Builder** `.xlsm` file
-2. Optionally upload the **Collection Report** `.xlsx`
-3. Click **Generate CSV**
-4. Download the output and review any skipped rows
+2. Click **Generate CSV**
+3. Download the output and review any skipped rows
 
 ---
 **State** is read from the first word of the Goal Builder filename
 (e.g. `SD SPP Goal Builder.xlsm` → **SD**)
+
+---
+The **LPM Collection Report** is bundled automatically.
+Upload a replacement below only if you have a newer version.
 """)
     st.markdown("---")
     st.caption("LPM Upload Generator · Southern Glazer's")
@@ -54,9 +65,9 @@ goal_builder_file = st.file_uploader(
 )
 
 collection_file = st.file_uploader(
-    "LPM Collection Report (.xlsx) — optional",
+    "Override Collection Report (.xlsx) — optional",
     type=["xlsx"],
-    help="Used to look up Salesforce Collection IDs. If not provided, that column will be blank.",
+    help="Leave blank to use the bundled collection report. Upload only if you have a newer version.",
 )
 
 # Clear prior result when new files are uploaded
@@ -86,11 +97,14 @@ if generate_clicked and goal_builder_file is not None:
                 with open(gb_path, "wb") as f:
                     f.write(goal_builder_file.getvalue())
 
+                # Collection report: use uploaded override, else fall back to bundled file
                 coll_path = None
                 if collection_file:
                     coll_path = os.path.join(tmpdir, collection_file.name)
                     with open(coll_path, "wb") as f:
                         f.write(collection_file.getvalue())
+                elif os.path.isfile(BUNDLED_COLLECTION):
+                    coll_path = BUNDLED_COLLECTION
 
                 output_path  = os.path.join(tmpdir, "lpm_upload.csv")
                 skipped_path = os.path.join(tmpdir, "lpm_skipped.csv")
