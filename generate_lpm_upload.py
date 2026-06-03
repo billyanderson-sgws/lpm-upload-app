@@ -206,9 +206,13 @@ def derive_state_from_filename(filepath):
 
 def load_collection_lookup(collection_path, state):
     """
-    Build a dict mapping lowercase sheet/group name -> collection ID for the given state.
-    Uses the 'Collection ID List' sheet. Skips any collection name containing '(do not use)'.
-    Matches by looking for 'CI - <STATE> SPP - <name>' pattern.
+    Build a dict mapping lowercase name variants -> collection ID for the given state.
+    Uses the 'Collection ID List' sheet. Skips entries with '(do not use)'.
+
+    For each matching row, stores the collection ID under:
+      - the full collection name (lowercase)
+      - the suffix after 'CI - <STATE> SPP - ' or 'CI - <STATE> - SPP - ' (lowercase)
+    This maximises the chance of matching against goal group names in the tracking table.
     """
     lookup = {}
     if not collection_path or not os.path.isfile(collection_path):
@@ -216,27 +220,36 @@ def load_collection_lookup(collection_path, state):
 
     wb = openpyxl.load_workbook(collection_path, data_only=True, read_only=True)
     if "Collection ID List" not in wb.sheetnames:
+        wb.close()
         return lookup
 
     ws = wb["Collection ID List"]
-    # Support both "CI - SD SPP - Name" and "CI - SD - SPP - Name" formats
     prefix_a = f"CI - {state.upper()} SPP - "
     prefix_b = f"CI - {state.upper()} - SPP - "
 
     for row in ws.iter_rows(min_row=2, values_only=True):
-        row_state, name, coll_id = (row[0] or ""), (row[1] or ""), (row[2] or "")
-        if str(row_state).strip().upper() != state.upper():
+        row_state = str(row[0] or "").strip().upper()
+        name      = str(row[1] or "").strip()
+        coll_id   = str(row[2] or "").strip()
+
+        if row_state != state.upper():
             continue
-        name = str(name).strip()
+        if not name or not coll_id:
+            continue
         if "(do not use)" in name.lower():
             continue
+
+        # Always store the full name as a key
+        lookup[name.lower()] = coll_id
+
+        # Also store the suffix after the prefix as a key
         name_upper = name.upper()
-        if name_upper.startswith(prefix_a.upper()):
-            group_name = name[len(prefix_a):].strip().lower()
-            lookup[group_name] = str(coll_id).strip()
-        elif name_upper.startswith(prefix_b.upper()):
-            group_name = name[len(prefix_b):].strip().lower()
-            lookup[group_name] = str(coll_id).strip()
+        for prefix in (prefix_a, prefix_b):
+            if name_upper.startswith(prefix.upper()):
+                suffix = name[len(prefix):].strip().lower()
+                if suffix:
+                    lookup[suffix] = coll_id
+                break
 
     wb.close()
     return lookup
