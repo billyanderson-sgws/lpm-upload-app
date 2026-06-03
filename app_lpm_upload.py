@@ -97,6 +97,7 @@ if generate_clicked and goal_builder_file is not None:
                     f.write(goal_builder_file.getvalue())
 
                 # Collection report: use uploaded override, else fall back to bundled file
+                # Both are copied into tmpdir so load_collection_lookup sees the same code path
                 coll_path = None
                 if collection_file:
                     coll_path = os.path.join(tmpdir, collection_file.name)
@@ -104,7 +105,9 @@ if generate_clicked and goal_builder_file is not None:
                         f.write(collection_file.getvalue())
                     coll_source = f"uploaded: {collection_file.name}"
                 elif Path(BUNDLED_COLLECTION).is_file():
-                    coll_path = BUNDLED_COLLECTION
+                    coll_path = os.path.join(tmpdir, Path(BUNDLED_COLLECTION).name)
+                    with open(BUNDLED_COLLECTION, "rb") as src, open(coll_path, "wb") as dst:
+                        dst.write(src.read())
                     coll_source = "bundled collection report"
                 else:
                     coll_source = f"NOT FOUND at {BUNDLED_COLLECTION}"
