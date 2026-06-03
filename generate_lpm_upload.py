@@ -206,13 +206,9 @@ def derive_state_from_filename(filepath):
 
 def load_collection_lookup(collection_path, state):
     """
-    Build a dict mapping lowercase name variants -> collection ID for the given state.
+    Build a dict mapping lowercase goal group name -> collection ID for the given state.
     Uses the 'Collection ID List' sheet. Skips entries with '(do not use)'.
-
-    For each matching row, stores the collection ID under:
-      - the full collection name (lowercase)
-      - the suffix after 'CI - <STATE> SPP - ' or 'CI - <STATE> - SPP - ' (lowercase)
-    This maximises the chance of matching against goal group names in the tracking table.
+    Keyed by the full collection name (lowercase) for direct lookup by the app dropdowns.
     """
     lookup = {}
     if not collection_path or not os.path.isfile(collection_path):
@@ -224,8 +220,6 @@ def load_collection_lookup(collection_path, state):
         return lookup
 
     ws = wb["Collection ID List"]
-    prefix_a = f"CI - {state.upper()} SPP - "
-    prefix_b = f"CI - {state.upper()} - SPP - "
 
     for row in ws.iter_rows(min_row=2, values_only=True):
         row_state = str(row[0] or "").strip().upper()
@@ -239,17 +233,7 @@ def load_collection_lookup(collection_path, state):
         if "(do not use)" in name.lower():
             continue
 
-        # Always store the full name as a key
         lookup[name.lower()] = coll_id
-
-        # Also store the suffix after the prefix as a key
-        name_upper = name.upper()
-        for prefix in (prefix_a, prefix_b):
-            if name_upper.startswith(prefix.upper()):
-                suffix = name[len(prefix):].strip().lower()
-                if suffix:
-                    lookup[suffix] = coll_id
-                break
 
     wb.close()
     return lookup
