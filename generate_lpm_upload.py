@@ -457,6 +457,7 @@ def group_key(rec):
         rec["goal_group"],
         rec["spp_tier"],
         rec["goal_type"],
+        rec["goal_uom"],
         rec["start_yyyymm"],
         rec["end_yyyymm"],
         rec["unsold_prd"],
