@@ -496,7 +496,7 @@ COLLECTION_LOOKUP = {}  # populated in main() after loading the collection file
 
 
 def build_tracker_row(key, recs):
-    goal_group, spp_tier, goal_type, start, end, unsold_prd = key
+    goal_group, spp_tier, goal_type, goal_uom_key, start, end, unsold_prd = key
 
     # UOM: use most common value across the group's records
     uom_counts = defaultdict(int)
