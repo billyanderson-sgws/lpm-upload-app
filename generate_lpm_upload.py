@@ -43,32 +43,44 @@ CONFIG = {
 
 # Tracking Table "Objective Type" (col 4) -> LPM goal_type
 OBJECTIVE_TYPE_MAP = {
-    "Volume (Cases)": "VolumeCases",
-    "New POD":        "DistributionNewPODs",
-    "POD":            "DistributionPODs",
-    "New ACS":        "DistributionNewACS",
-    "ACS":            "DistributionACS",
-    "Revenue":        "VolumeRevenue",
-    "DREV":           "VolumeRevenueDREV",
+    "Volume (Cases)":   "VolumeCases",
+    "New POD":          "DistributionNewPODs",
+    "POD":              "DistributionPODs",
+    "New ACS":          "DistributionNewACS",
+    "ACS":              "DistributionACS",
+    "Revenue":          "VolumeRevenue",
+    "DREV":             "VolumeRevenueDREV",
+    "GP":               "VolumeGP",
+    "Volume Combos":    "VolumeCombos",
+    "Volume Points":    "VolumePoints",
+    "Reorder":          "DistributionReorder",
 }
 
 # Tracker type short labels used in output filenames
 TRACKER_TYPE_LABELS = {
-    "VolumeCases":         "Vol",
-    "DistributionNewPODs": "NPOD",
-    "DistributionPODs":    "POD",
-    "DistributionNewACS":  "NACS",
-    "DistributionACS":     "ACS",
+    "VolumeCases":          "Vol",
+    "DistributionNewPODs":  "NPOD",
+    "DistributionPODs":     "POD",
+    "DistributionNewACS":   "NACS",
+    "DistributionACS":      "ACS",
+    "VolumeCombos":         "Combo",
+    "VolumePoints":         "Pts",
+    "DistributionReorder":  "Reorder",
 }
 
-DISTRIBUTION_TYPES = {"DistributionNewPODs", "DistributionPODs", "DistributionACS", "DistributionNewACS"}
+DISTRIBUTION_TYPES = {
+    "DistributionNewPODs", "DistributionPODs",
+    "DistributionACS", "DistributionNewACS",
+    "DistributionReorder",
+}
 
 # Tracking Table "Measure" (col 10) -> LPM goal_uom
 UOM_MAP = {
     "9L":      "NineLiter",
     "Cases":   "Cases",
-    "Dollars": "Dollars",
     "STD":     "STD",
+    "BATF":    "BATF",
+    "Bottles": "Bottles",
 }
 
 # SPP Tier (col 2) -> program_class
@@ -157,7 +169,7 @@ VALID_DIST_GOAL_FROM = {
 VALID_POD_ATTRIBUTES = {
     "PhSubGroup", "VarietalSize", "Flavor", "PhSuperGroup", "PhGroup",
     "PodId", "PodName", "ProductId", "ProductSize", "SubgroupSize",
-    "FlavorSize", "ItemDescVintageRoll",
+    "FlavorSize", "ItemDescVintageRoll", "Varietal",
 }
 
 POD_ATTRIBUTE_MAP = {
@@ -411,7 +423,7 @@ def load_tracking_table(wb_path):
             continue
 
         # Map UOM; revenue/GP types always blank; distribution types default to Cases
-        if goal_type in {"VolumeRevenue", "VolumeRevenueDREV", "VolumeGP"}:
+        if goal_type in {"VolumeRevenue", "VolumeRevenueDREV", "VolumeGP", "VolumeCombos", "VolumePoints"}:
             goal_uom = ""
         else:
             goal_uom = UOM_MAP.get(measure, "")
