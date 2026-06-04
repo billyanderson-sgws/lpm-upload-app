@@ -78,6 +78,7 @@ DISTRIBUTION_TYPES = {
 UOM_MAP = {
     "9L":      "NineLiter",
     "Cases":   "Cases",
+    "Dec":     "Cases",
     "STD":     "STD",
     "BATF":    "BATF",
     "Bottles": "Bottles",
