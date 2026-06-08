@@ -76,12 +76,19 @@ DISTRIBUTION_TYPES = {
 
 # Tracking Table "Measure" (col 10) -> LPM goal_uom
 UOM_MAP = {
-    "9L":      "NineLiter",
-    "Cases":   "Cases",
-    "Dec":     "Cases",
-    "STD":     "STD",
-    "BATF":    "BATF",
-    "Bottles": "Bottles",
+    "9L":             "NineLiter",
+    "Cases":          "Cases",
+    "Dec":            "Cases",
+    "dcml":           "Cases",
+    "QTY_DEC":        "Cases",
+    "STD":            "STD",
+    "Standard Cs":    "STD",
+    "STD_CASE":       "STD",
+    "BATF":           "BATF",
+    "Bottles":        "Bottles",
+    "SUPP_CASE":      "SupplierRatio",
+    "Supplier Ratio": "SupplierRatio",
+    "Supp":           "SupplierRatio",
 }
 
 # SPP Tier (col 2) -> program_class
