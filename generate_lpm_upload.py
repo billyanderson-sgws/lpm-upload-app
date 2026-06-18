@@ -76,15 +76,15 @@ DISTRIBUTION_TYPES = {
 
 # Tracking Table "Measure" (col 10) -> LPM goal_uom
 UOM_MAP = {
-    "9L":             "NineLiter",
-    "Cases":          "Cases",
-    "Dec":            "Cases",
-    "dcml":           "Cases",
-    "QTY_DEC":        "Cases",
-    "STD":            "STD",
-    "Standard Cs":    "STD",
-    "STD_CASE":       "STD",
-    "BATF":           "BATF",
+    "9L":      "NineLiter",
+    "Cases":   "Cases",
+    "Dec":     "Cases",
+    "dcml":    "Cases",
+    "QTY_DEC": "Cases",
+    "STD":          "STD",
+    "Standard Cs":  "STD",
+    "STD_CASE":     "STD",
+    "BATF":    "BATF",
     "Bottles":        "Bottles",
     "SUPP_CASE":      "SupplierRatio",
     "Supplier Ratio": "SupplierRatio",
@@ -181,7 +181,18 @@ VALID_POD_ATTRIBUTES = {
 }
 
 POD_ATTRIBUTE_MAP = {
+    "sub group":                              "PhSubGroup",
+    "varietal size":                          "VarietalSize",
+    "flavor":                                 "Flavor",
+    "super group":                            "PhSuperGroup",
+    "group":                                  "PhGroup",
+    "supplier pod id":                        "PodId",
+    "item":                                   "ProductId",
+    "size":                                   "ProductSize",
+    "sub group size":                         "SubgroupSize",
+    "flavor size":                            "FlavorSize",
     "item roll size (vintage trim)/pim item": "ItemDescVintageRoll",
+    "varietal":                               "Varietal",
 }
 
 def normalize_pod_attribute(val):
