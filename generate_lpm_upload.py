@@ -98,7 +98,14 @@ PROGRAM_CLASS_MAP = {
 }
 
 # Objective types and measures to skip entirely
-SKIP_OBJECTIVE_TYPES = {"SPP My Sales", "Proof Comm Invoice Freq"}
+SKIP_OBJECTIVE_TYPES = {
+    "SPP My Sales",
+    "Proof Comm Invoice Freq",
+    "Proof Com Activation",
+    "SET Backbar",
+    "SET Menu",
+    "SET - Use Expanded Columns",
+}
 SKIP_MEASURES        = {"DigComRev"}
 
 # LPM CSV column order (must match upload spec)
