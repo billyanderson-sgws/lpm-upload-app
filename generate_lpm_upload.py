@@ -422,6 +422,12 @@ def load_tracking_table(wb_path):
         unsold_prd  = safe_str(cv(9))
         measure     = safe_str(cv(10))
         mkt_seg     = cv(11)
+        # Excel stores percentage goals as decimals (7.44% -> 0.0744) but reports
+        # the format as General when styles are applied via named styles — openpyxl
+        # can't detect it. Heuristic: if value is a non-integer between -1 and 1
+        # (exclusive), treat it as a percentage and multiply by 100.
+        if isinstance(mkt_seg, float) and -1 < mkt_seg < 1 and mkt_seg != 0:
+            mkt_seg = round(mkt_seg * 100, 4)
         ptg_name_v  = cv(12)
         level_detail = safe_str(cv(13))
         supplier    = cv(14)
