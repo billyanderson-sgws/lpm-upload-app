@@ -545,9 +545,9 @@ def build_tracker_row(key, recs):
 
     program_class = recs[0]["program_class"]
 
-    # Unsold dates
+    # Unsold dates — distribution trackers only; never on volume trackers
     unsold_start, unsold_end = "", ""
-    if unsold_prd.upper() == "CYTD":
+    if unsold_prd.upper() == "CYTD" and goal_type in DISTRIBUTION_TYPES:
         unsold_start, unsold_end = cytd_unsold_dates(start)
 
     return {
