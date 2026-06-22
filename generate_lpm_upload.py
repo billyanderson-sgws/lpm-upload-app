@@ -607,7 +607,7 @@ def build_ptg_row(rec):
         "distribution_target":            rec["mkt_seg_goal"],
         "min_objective_target":           rec["min_goal_per_rep"] or "1",
         "distribution_level_path":        CONFIG["distribution_level_path"],
-        "pod_attribute":                  rec["pod_attribute"],
+        "pod_attribute":                  rec["pod_attribute"] if is_dist else "",
         "achievement_min":                rec["qualifier"],
     }
 
