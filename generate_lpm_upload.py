@@ -102,6 +102,7 @@ SKIP_OBJECTIVE_TYPES = {
     "SPP My Sales",
     "Proof Comm Invoice Freq",
     "Proof Com Activation",
+    "Proof Comm Proposals",
     "SET Backbar",
     "SET Menu",
     "SET - Use Expanded Columns",
@@ -372,7 +373,11 @@ def load_tracking_table(wb_path):
     Read the Tracking Table sheet and return (records, skipped_rows).
     Each record is a dict of parsed/mapped fields ready for CSV output.
     """
+    # Load twice: formula values for text/dropdown cells (avoids stale cached values),
+    # data_only for date cells which need calculated results
+    wb_formula = openpyxl.load_workbook(wb_path, keep_vba=True, data_only=False)
     wb = openpyxl.load_workbook(wb_path, keep_vba=True, data_only=True)
+    ws_formula = wb_formula["Tracking Table"]
 
     if "Tracking Table" not in wb.sheetnames:
         raise ValueError(
@@ -392,12 +397,20 @@ def load_tracking_table(wb_path):
 
     for r in range(2, ws.max_row + 1):
         def cv(c):
-            return ws.cell(r, c).value
+            # Use formula workbook for text/dropdown columns to avoid stale cached values
+            # Use data_only workbook for date columns (cols 5-8) which need calculated results
+            if c in (5, 6, 7, 8):
+                return ws.cell(r, c).value
+            v = ws_formula.cell(r, c).value
+            # If formula workbook returns a formula string, fall back to cached value
+            if isinstance(v, str) and v.startswith("="):
+                return ws.cell(r, c).value
+            return v
 
         goal_group  = safe_str(cv(1))
         spp_tier    = safe_str(cv(2))
         goal_bucket = safe_str(cv(3))
-        obj_type    = safe_str(cv(4))
+        obj_type    = safe_str(cv(4)).rstrip(" -")
         start_raw   = cv(5)
         end_raw     = cv(6)
         # cols 7-8 = Basis Period (not needed; basis_flag=TRUE handles it)
