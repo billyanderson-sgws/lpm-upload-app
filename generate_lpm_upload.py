@@ -74,8 +74,10 @@ DISTRIBUTION_TYPES = {
     "DistributionReorder",
 }
 
-# Only NPOD and NACS support unsold periods and POD attributes
-UNSOLD_AND_POD_TYPES = {"DistributionNewPODs", "DistributionNewACS"}
+# Only NPOD and NACS support unsold periods
+UNSOLD_TYPES = {"DistributionNewPODs", "DistributionNewACS"}
+# Only NPOD and POD support POD attributes
+POD_ATTR_TYPES = {"DistributionNewPODs", "DistributionPODs"}
 
 # Tracking Table "Measure" (col 10) -> LPM goal_uom
 UOM_MAP = {
@@ -508,7 +510,7 @@ def load_tracking_table(wb_path):
 
 def group_key(rec):
     # Unsold period only applies to NPOD/NACS — don't let it split other trackers
-    unsold = rec["unsold_prd"] if rec["goal_type"] in UNSOLD_AND_POD_TYPES else ""
+    unsold = rec["unsold_prd"] if rec["goal_type"] in UNSOLD_TYPES else ""
     return (
         rec["goal_group"],
         rec["spp_tier"],
@@ -552,7 +554,7 @@ def build_tracker_row(key, recs):
 
     # Unsold dates — NPOD and NACS only
     unsold_start, unsold_end = "", ""
-    if unsold_prd.upper() == "CYTD" and goal_type in UNSOLD_AND_POD_TYPES:
+    if unsold_prd.upper() == "CYTD" and goal_type in UNSOLD_TYPES:
         unsold_start, unsold_end = cytd_unsold_dates(start)
 
     return {
@@ -586,7 +588,7 @@ def build_tracker_row(key, recs):
 
 
 def build_ptg_row(rec):
-    is_dist = rec["goal_type"] in UNSOLD_AND_POD_TYPES
+    is_dist = rec["goal_type"] in POD_ATTR_TYPES
     return {
         "goal_category":                  "PTG",
         "goal_name":                      rec["ptg_name"],
