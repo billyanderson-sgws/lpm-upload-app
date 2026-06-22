@@ -504,6 +504,8 @@ def load_tracking_table(wb_path):
 # ---------------------------------------------------------------------------
 
 def group_key(rec):
+    # Unsold period is irrelevant for volume types — don't let it split trackers
+    unsold = rec["unsold_prd"] if rec["goal_type"] in DISTRIBUTION_TYPES else ""
     return (
         rec["goal_group"],
         rec["spp_tier"],
@@ -511,7 +513,7 @@ def group_key(rec):
         rec["goal_uom"],
         rec["start_yyyymm"],
         rec["end_yyyymm"],
-        rec["unsold_prd"],
+        unsold,
     )
 
 
