@@ -426,8 +426,9 @@ def load_tracking_table(wb_path):
         goal_bucket = safe_str(cv(3))
         obj_type    = safe_str(cv(4)).rstrip(" -")
         start_raw   = cv(5)
-        end_raw     = cv(6)
-        # cols 7-8 = Basis Period (not needed; basis_flag=TRUE handles it)
+        end_raw          = cv(6)
+        basis_start_raw  = cv(7)
+        basis_end_raw    = cv(8)
         unsold_prd  = safe_str(cv(9))
         measure     = safe_str(cv(10))
         mkt_seg     = cv(11)
@@ -490,8 +491,10 @@ def load_tracking_table(wb_path):
                 goal_uom = "Cases"
 
         # Dates
-        start_yyyymm = to_yyyymm(start_raw)
-        end_yyyymm   = next_future_month_yyyymm()
+        start_yyyymm       = to_yyyymm(start_raw)
+        end_yyyymm         = next_future_month_yyyymm()
+        basis_start_yyyymm = to_yyyymm(basis_start_raw)
+        basis_end_yyyymm   = to_yyyymm(basis_end_raw)
 
         # Validate POD attribute
         pod_attr_clean = normalize_pod_attribute(pod_attr)
@@ -506,9 +509,11 @@ def load_tracking_table(wb_path):
             "goal_type":     goal_type,
             "goal_uom":      goal_uom,
             "program_class": PROGRAM_CLASS_MAP.get(spp_tier, ""),
-            "start_yyyymm":  start_yyyymm,
-            "end_yyyymm":    end_yyyymm,
-            "unsold_prd":    unsold_prd,
+            "start_yyyymm":        start_yyyymm,
+            "end_yyyymm":          end_yyyymm,
+            "basis_start_yyyymm":  basis_start_yyyymm,
+            "basis_end_yyyymm":    basis_end_yyyymm,
+            "unsold_prd":          unsold_prd,
             "ptg_name":      name,
             "mkt_seg_goal":       _numeric_str(mkt_seg),
             "pod_attribute":      pod_attr_clean,
@@ -533,6 +538,8 @@ def group_key(rec):
         rec["goal_uom"],
         rec["start_yyyymm"],
         rec["end_yyyymm"],
+        rec["basis_start_yyyymm"],
+        rec["basis_end_yyyymm"],
         unsold,
     )
 
@@ -556,7 +563,7 @@ COLLECTION_LOOKUP = {}  # populated in main() after loading the collection file
 
 
 def build_tracker_row(key, recs):
-    goal_group, spp_tier, goal_type, goal_uom_key, start, end, unsold_prd = key
+    goal_group, spp_tier, goal_type, goal_uom_key, start, end, basis_start, basis_end, unsold_prd = key
 
     # UOM: use most common value across the group's records
     uom_counts = defaultdict(int)
