@@ -157,16 +157,51 @@ def next_future_month_yyyymm():
     return f"{today.year}{today.month + 1:02d}"
 
 
-def cytd_unsold_dates(goal_start_yyyymm):
+def _yyyymm_subtract_months(yyyymm, months):
+    """Return YYYYMM shifted back by the given number of whole months."""
+    year  = int(yyyymm[:4])
+    month = int(yyyymm[4:6])
+    month -= months
+    while month <= 0:
+        month += 12
+        year  -= 1
+    return f"{year}{month:02d}"
+
+
+def compute_unsold_dates(unsold_prd, goal_start_yyyymm):
     """
-    CYTD: January of the goal_start year through the current calendar month.
-    Returns (unsold_start_yyyymm, unsold_end_yyyymm).
+    Compute (unsold_start_yyyymm, unsold_end_yyyymm) from the unsold period value
+    and the tracker's incentive start month.
+
+    Rules:
+      - CYTD: January of the incentive start year through one month prior to start.
+      - Numeric day value (e.g. "30", "90", "30 days"): assume 30 days = 1 month.
+        unsold_end   = one month prior to incentive start.
+        unsold_start = unsold_end minus (days/30 - 1) additional months.
+        e.g. 30 days -> 1 month window ending month-before-start (start=202607 -> 202606 to 202606)
+             90 days -> 3 month window ending month-before-start (start=202607 -> 202604 to 202606)
+      - Anything else: return ("", "").
     """
-    if not goal_start_yyyymm or len(goal_start_yyyymm) < 4:
+    if not unsold_prd or not goal_start_yyyymm or len(goal_start_yyyymm) < 6:
         return "", ""
-    year = goal_start_yyyymm[:4]
-    today = date.today()
-    return f"{year}01", today.strftime("%Y%m")
+
+    prd = unsold_prd.strip()
+    unsold_end = _yyyymm_subtract_months(goal_start_yyyymm, 1)
+
+    if prd.upper() == "CYTD":
+        year = goal_start_yyyymm[:4]
+        return f"{year}01", unsold_end
+
+    # Extract leading number — handles "30", "90 days", "90 Days", "30 day", etc.
+    import re as _re
+    m = _re.match(r"(\d+)", prd)
+    if m:
+        days = int(m.group(1))
+        months = max(1, round(days / 30))
+        unsold_start = _yyyymm_subtract_months(goal_start_yyyymm, months)
+        return unsold_start, unsold_end
+
+    return "", ""
 
 
 def safe_str(val):
@@ -576,8 +611,8 @@ def build_tracker_row(key, recs):
 
     # Unsold dates — NPOD and NACS only
     unsold_start, unsold_end = "", ""
-    if unsold_prd.upper() == "CYTD" and goal_type in UNSOLD_TYPES:
-        unsold_start, unsold_end = cytd_unsold_dates(start)
+    if unsold_prd and goal_type in UNSOLD_TYPES:
+        unsold_start, unsold_end = compute_unsold_dates(unsold_prd, start)
 
     return {
         "goal_category":                  "Tracker",
