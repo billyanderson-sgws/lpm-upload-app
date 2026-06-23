@@ -491,7 +491,7 @@ def load_tracking_table(wb_path):
 
         # Dates
         start_yyyymm = to_yyyymm(start_raw)
-        end_yyyymm   = to_yyyymm(end_raw) or next_future_month_yyyymm()
+        end_yyyymm   = next_future_month_yyyymm()
 
         # Validate POD attribute
         pod_attr_clean = normalize_pod_attribute(pod_attr)
