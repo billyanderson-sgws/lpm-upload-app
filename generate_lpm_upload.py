@@ -554,6 +554,20 @@ def load_tracking_table(wb_path):
             skipped.append(make_skip(r, f"unknown objective type: {obj_type!r}", raw_row))
             continue
 
+        # Coerce goal_type based on unsold period:
+        #   POD/ACS + non-None unsold  -> NPOD/NACS
+        #   NPOD/NACS + "None" unsold  -> POD/ACS
+        _unsold_present = unsold_prd and unsold_prd.strip().upper() != "NONE"
+        _unsold_none    = unsold_prd and unsold_prd.strip().upper() == "NONE"
+        if goal_type == "DistributionPODs" and _unsold_present:
+            goal_type = "DistributionNewPODs"
+        elif goal_type == "DistributionACS" and _unsold_present:
+            goal_type = "DistributionNewACS"
+        elif goal_type == "DistributionNewPODs" and _unsold_none:
+            goal_type = "DistributionPODs"
+        elif goal_type == "DistributionNewACS" and _unsold_none:
+            goal_type = "DistributionACS"
+
         # Resolve PTG name — explicit name always wins; fall back to "Total <type>" only if blank
         name = ptg_name_from_row(ptg_name_v, selection, supplier)
         if not name and level_detail == "Total":
