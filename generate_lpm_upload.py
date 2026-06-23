@@ -192,8 +192,7 @@ def compute_unsold_dates(unsold_prd, goal_start_yyyymm, supplier_name="", goal_e
     prd = unsold_prd.strip()
 
     if prd.upper() == "R12":
-        ref = goal_end_yyyymm if goal_end_yyyymm and len(goal_end_yyyymm) >= 6 else goal_start_yyyymm
-        unsold_end = _yyyymm_subtract_months(ref, 1)
+        unsold_end = _yyyymm_subtract_months(goal_start_yyyymm, 1)
         unsold_start = _yyyymm_subtract_months(unsold_end, 11)
         return unsold_start, unsold_end
 
