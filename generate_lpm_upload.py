@@ -168,26 +168,35 @@ def _yyyymm_subtract_months(yyyymm, months):
     return f"{year}{month:02d}"
 
 
-def compute_unsold_dates(unsold_prd, goal_start_yyyymm, supplier_name=""):
+def compute_unsold_dates(unsold_prd, goal_start_yyyymm, supplier_name="", goal_end_yyyymm=""):
     """
     Compute (unsold_start_yyyymm, unsold_end_yyyymm) from the unsold period value
-    and the tracker's incentive start month.
+    and the tracker's incentive start/end months.
 
     Rules:
+      - R12: unsold_end = one month prior to tracking end; unsold_start = 12 months prior to that.
+             e.g. July-July tracker (end=202707) -> unsold_end=202706, unsold_start=202507.
       - CYTD: January of the incentive start year through one month prior to start.
       - FYTD: Supplier's fiscal start month (from FISCAL_LOOKUP) through one month
               prior to incentive start. Falls back to CYTD if supplier not found.
       - Numeric day value (e.g. "30", "90", "30 days"): assume 30 days = 1 month.
         unsold_end   = one month prior to incentive start.
-        unsold_start = unsold_end minus (days/30 - 1) additional months.
-        e.g. 30 days -> 1 month window (start=202607 -> 202606 to 202606)
-             90 days -> 3 month window (start=202607 -> 202604 to 202606)
+        unsold_start = N months prior to incentive start.
+        e.g. 30 days -> start=202607 -> 202606 to 202606
+             90 days -> start=202607 -> 202604 to 202606
       - Anything else: return ("", "").
     """
     if not unsold_prd or not goal_start_yyyymm or len(goal_start_yyyymm) < 6:
         return "", ""
 
     prd = unsold_prd.strip()
+
+    if prd.upper() == "R12":
+        ref = goal_end_yyyymm if goal_end_yyyymm and len(goal_end_yyyymm) >= 6 else goal_start_yyyymm
+        unsold_end = _yyyymm_subtract_months(ref, 1)
+        unsold_start = _yyyymm_subtract_months(unsold_end, 11)
+        return unsold_start, unsold_end
+
     unsold_end = _yyyymm_subtract_months(goal_start_yyyymm, 1)
 
     if prd.upper() == "CYTD":
@@ -652,7 +661,7 @@ def build_tracker_row(key, recs):
     unsold_start, unsold_end = "", ""
     if unsold_prd and goal_type in UNSOLD_TYPES:
         supplier_name = recs[0].get("supplier", "")
-        unsold_start, unsold_end = compute_unsold_dates(unsold_prd, start, supplier_name)
+        unsold_start, unsold_end = compute_unsold_dates(unsold_prd, start, supplier_name, end)
 
     return {
         "goal_category":                  "Tracker",
