@@ -148,6 +148,15 @@ def to_yyyymm(value):
     return s
 
 
+def next_future_month_yyyymm():
+    """Return the first month that is strictly in the future from today (YYYYMM)."""
+    today = date.today()
+    # Next month after today
+    if today.month == 12:
+        return f"{today.year + 1}01"
+    return f"{today.year}{today.month + 1:02d}"
+
+
 def cytd_unsold_dates(goal_start_yyyymm):
     """
     CYTD: January of the goal_start year through the current calendar month.
@@ -482,7 +491,7 @@ def load_tracking_table(wb_path):
 
         # Dates
         start_yyyymm = to_yyyymm(start_raw)
-        end_yyyymm   = to_yyyymm(end_raw) or start_yyyymm
+        end_yyyymm   = to_yyyymm(end_raw) or next_future_month_yyyymm()
 
         # Validate POD attribute
         pod_attr_clean = normalize_pod_attribute(pod_attr)
