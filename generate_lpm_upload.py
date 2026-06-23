@@ -168,18 +168,20 @@ def _yyyymm_subtract_months(yyyymm, months):
     return f"{year}{month:02d}"
 
 
-def compute_unsold_dates(unsold_prd, goal_start_yyyymm):
+def compute_unsold_dates(unsold_prd, goal_start_yyyymm, supplier_name=""):
     """
     Compute (unsold_start_yyyymm, unsold_end_yyyymm) from the unsold period value
     and the tracker's incentive start month.
 
     Rules:
       - CYTD: January of the incentive start year through one month prior to start.
+      - FYTD: Supplier's fiscal start month (from FISCAL_LOOKUP) through one month
+              prior to incentive start. Falls back to CYTD if supplier not found.
       - Numeric day value (e.g. "30", "90", "30 days"): assume 30 days = 1 month.
         unsold_end   = one month prior to incentive start.
         unsold_start = unsold_end minus (days/30 - 1) additional months.
-        e.g. 30 days -> 1 month window ending month-before-start (start=202607 -> 202606 to 202606)
-             90 days -> 3 month window ending month-before-start (start=202607 -> 202604 to 202606)
+        e.g. 30 days -> 1 month window (start=202607 -> 202606 to 202606)
+             90 days -> 3 month window (start=202607 -> 202604 to 202606)
       - Anything else: return ("", "").
     """
     if not unsold_prd or not goal_start_yyyymm or len(goal_start_yyyymm) < 6:
@@ -189,6 +191,14 @@ def compute_unsold_dates(unsold_prd, goal_start_yyyymm):
     unsold_end = _yyyymm_subtract_months(goal_start_yyyymm, 1)
 
     if prd.upper() == "CYTD":
+        year = goal_start_yyyymm[:4]
+        return f"{year}01", unsold_end
+
+    if prd.upper() == "FYTD":
+        fiscal_start = FISCAL_LOOKUP.get(supplier_name.lower(), "")
+        if fiscal_start:
+            return fiscal_start, unsold_end
+        # Fall back to CYTD if supplier not in lookup
         year = goal_start_yyyymm[:4]
         return f"{year}01", unsold_end
 
@@ -413,6 +423,33 @@ def load_collection_lookup(collection_path, state):
     return lookup
 
 
+def load_fiscal_lookup(fiscal_path):
+    """
+    Build a dict mapping lowercase supplier name -> fiscal start YYYYMM.
+    Reads 'Supplier Fiscal Start Month.xlsx' — header on row 3,
+    data from row 4: col B = supplier number, col C = supplier name, col D = fiscal start YYYYMM.
+    """
+    if not fiscal_path or not os.path.isfile(fiscal_path):
+        return {}
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(fiscal_path, data_only=True)
+    ws = wb.active
+    lookup = {}
+    for row in ws.iter_rows(min_row=4, values_only=True):
+        name  = str(row[2]).strip() if row[2] else ""   # col C
+        start = str(row[3]).strip() if row[3] else ""   # col D
+        if not name or not start or name == "None":
+            continue
+        # Normalize YYYYMM — may come back as float e.g. 202601.0
+        if start.endswith(".0"):
+            start = start[:-2]
+        if len(start) == 6 and start.isdigit():
+            lookup[name.lower()] = start
+    return lookup
+
+
 # ---------------------------------------------------------------------------
 # Load Tracking Table
 # ---------------------------------------------------------------------------
@@ -549,6 +586,7 @@ def load_tracking_table(wb_path):
             "basis_start_yyyymm":  basis_start_yyyymm,
             "basis_end_yyyymm":    basis_end_yyyymm,
             "unsold_prd":          unsold_prd,
+            "supplier":      safe_str(supplier),
             "ptg_name":      name,
             "mkt_seg_goal":       _numeric_str(mkt_seg),
             "pod_attribute":      pod_attr_clean,
@@ -595,6 +633,7 @@ def group_records(records):
 # ---------------------------------------------------------------------------
 
 COLLECTION_LOOKUP = {}  # populated in main() after loading the collection file
+FISCAL_LOOKUP     = {}  # supplier name (lowercase) -> fiscal start YYYYMM
 
 
 def build_tracker_row(key, recs):
@@ -612,7 +651,8 @@ def build_tracker_row(key, recs):
     # Unsold dates — NPOD and NACS only
     unsold_start, unsold_end = "", ""
     if unsold_prd and goal_type in UNSOLD_TYPES:
-        unsold_start, unsold_end = compute_unsold_dates(unsold_prd, start)
+        supplier_name = recs[0].get("supplier", "")
+        unsold_start, unsold_end = compute_unsold_dates(unsold_prd, start, supplier_name)
 
     return {
         "goal_category":                  "Tracker",
@@ -772,6 +812,18 @@ def main():
 
     base = os.path.splitext(output_path)[0]
     skipped_path = base + "_skipped.csv"
+
+    # Load fiscal start month lookup
+    global FISCAL_LOOKUP
+    fiscal_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Supplier Fiscal Start Month.xlsx")
+    if not os.path.isfile(fiscal_path):
+        # Fall back to same folder as input file
+        fiscal_path = os.path.join(os.path.dirname(os.path.abspath(input_path)), "Supplier Fiscal Start Month.xlsx")
+    if os.path.isfile(fiscal_path):
+        FISCAL_LOOKUP = load_fiscal_lookup(fiscal_path)
+        print(f"Fiscal lookup loaded: {len(FISCAL_LOOKUP)} suppliers  ({os.path.basename(fiscal_path)})")
+    else:
+        print("Fiscal lookup not found — FYTD unsold periods will fall back to CYTD.")
 
     # Load collection ID lookup
     global COLLECTION_LOOKUP
