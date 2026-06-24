@@ -74,6 +74,11 @@ DISTRIBUTION_TYPES = {
     "DistributionReorder",
 }
 
+VOLUME_TYPES = {
+    "VolumeCases", "VolumeRevenue", "VolumeRevenueDREV",
+    "VolumeGP", "VolumeCombos", "VolumePoints",
+}
+
 # Only NPOD and NACS support unsold periods
 UNSOLD_TYPES = {"DistributionNewPODs", "DistributionNewACS"}
 # Only NPOD and POD support POD attributes
@@ -707,7 +712,8 @@ def build_tracker_row(key, recs):
 
 
 def build_ptg_row(rec):
-    is_dist = rec["goal_type"] in POD_ATTR_TYPES
+    is_dist   = rec["goal_type"] in POD_ATTR_TYPES
+    is_volume = rec["goal_type"] in VOLUME_TYPES
     return {
         "goal_category":                  "PTG",
         "goal_name":                      rec["ptg_name"],
@@ -731,10 +737,10 @@ def build_ptg_row(rec):
         "product_collection_id":          "",
         "customer_collection_id":         "",
         "distribution_target":            rec["mkt_seg_goal"],
-        "min_objective_target":           rec["min_goal_per_rep"] or "1",
+        "min_objective_target":           "" if is_volume else (rec["min_goal_per_rep"] or "1"),
         "distribution_level_path":        CONFIG["distribution_level_path"],
         "pod_attribute":                  rec["pod_attribute"] if is_dist else "",
-        "achievement_min":                rec["qualifier"],
+        "achievement_min":                "" if is_volume else rec["qualifier"],
     }
 
 
