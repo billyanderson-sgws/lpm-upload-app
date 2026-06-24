@@ -521,7 +521,9 @@ def load_tracking_table(wb_path):
         # the format as General when styles are applied via named styles — openpyxl
         # can't detect it. Heuristic: if value is a non-integer between -1 and 1
         # (exclusive), treat it as a percentage and multiply by 100.
-        if isinstance(mkt_seg, float) and -1 < mkt_seg < 1 and mkt_seg != 0:
+        if isinstance(mkt_seg, str) and mkt_seg.strip().upper() == "FLAT":
+            mkt_seg = 0
+        elif isinstance(mkt_seg, float) and -1 < mkt_seg < 1 and mkt_seg != 0:
             mkt_seg = round(mkt_seg * 100, 4)
         ptg_name_v  = cv(12)
         level_detail = safe_str(cv(13))
