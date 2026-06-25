@@ -3,5 +3,6 @@ __pycache__/
 *.xlsm
 *.xlsx
 !LPM Salesforce and Overlay Collection Report.xlsx
+!Supplier Fiscal Start Month.xlsx
 *.csv
 .env
