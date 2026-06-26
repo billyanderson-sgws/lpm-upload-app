@@ -249,17 +249,30 @@ if goal_builder_file:
             options = ["(none)"] + list(collections.keys())
             manual_mapping = {}
 
-            for group in goal_groups:
-                best = auto_match(group, state, collections)
-                default_idx = options.index(best) if best and best in options else 0
-                selected = st.selectbox(
-                    group,
-                    options,
-                    index=default_idx,
-                    key=f"cmap_{group}",
-                )
-                if selected != "(none)":
-                    manual_mapping[group.lower()] = collections[selected]
+            st.markdown(
+                """
+                <style>
+                [data-testid="stVerticalBlockBorderWrapper"] .collection-scroll {
+                    max-height: 400px;
+                    overflow-y: auto;
+                    padding-right: 8px;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            with st.container(height=400):
+                for group in goal_groups:
+                    best = auto_match(group, state, collections)
+                    default_idx = options.index(best) if best and best in options else 0
+                    selected = st.selectbox(
+                        group,
+                        options,
+                        index=default_idx,
+                        key=f"cmap_{group}",
+                    )
+                    if selected != "(none)":
+                        manual_mapping[group.lower()] = collections[selected]
 
             st.session_state.manual_mapping = manual_mapping
 
