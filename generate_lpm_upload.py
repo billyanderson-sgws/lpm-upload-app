@@ -245,7 +245,7 @@ def _numeric_str(val):
         return s
     except ValueError:
         import re
-        m = re.match(r"(\d+\.?\d*)", s)
+        m = re.match(r"(-?\d+\.?\d*)", s)
         return m.group(1) if m else ""
 
 
