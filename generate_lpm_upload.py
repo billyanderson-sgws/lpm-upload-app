@@ -84,6 +84,9 @@ UNSOLD_TYPES = {"DistributionNewPODs", "DistributionNewACS"}
 # Only NPOD and POD support POD attributes
 POD_ATTR_TYPES = {"DistributionNewPODs", "DistributionPODs"}
 
+# Tracking Table "Goal Distribution" (col 20) value that marks a fixed-per-salesperson goal
+FIXED_GOAL_DISTRIBUTION = "Fixed Goal per Salesperson"
+
 # Tracking Table "Measure" (col 10) -> LPM goal_uom
 UOM_MAP = {
     "9L":      "NineLiter",
@@ -354,7 +357,9 @@ def _parse_collection_sheet_raw(file_source, state):
             rels_tree = ET.parse(f)
         RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
         for rel in rels_tree.findall(f"{{{RELS_NS}}}Relationship"):
-            rid_to_path[rel.get("Id")] = "xl/" + rel.get("Target").lstrip("/")
+            target = rel.get("Target")
+            path = target.lstrip("/") if target.startswith("/") else "xl/" + target
+            rid_to_path[rel.get("Id")] = path
 
     target_name = "Collection ID List"
     candidate = None
@@ -378,6 +383,12 @@ def _parse_collection_sheet_raw(file_source, state):
 
     def cell_value(c_elem):
         t = c_elem.get("t", "n")
+        if t == "inlineStr":
+            is_elem = c_elem.find(f"{{{NS}}}is")
+            if is_elem is None:
+                return ""
+            parts = is_elem.findall(f".//{{{NS}}}t")
+            return "".join(p.text or "" for p in parts)
         v_elem = c_elem.find(f"{{{NS}}}v")
         if v_elem is None or v_elem.text is None:
             return ""
@@ -529,7 +540,8 @@ def load_tracking_table(wb_path):
         level_detail = safe_str(cv(13))
         supplier    = cv(14)
         selection       = cv(15)
-        # cols 16-20 not used
+        # cols 16-19 not used
+        goal_distribution = safe_str(cv(20))
         qualifier       = cv(21)  # Qualifier -> achievement_min (numeric only)
         min_goal_per_rep = cv(22) # Min Goal per Rep -> min_objective_target
         # col 23 = Min Cases, col 24 = Min Facings (not used)
@@ -621,6 +633,7 @@ def load_tracking_table(wb_path):
             "pod_attribute":      pod_attr_clean,
             "min_goal_per_rep":   _numeric_str(min_goal_per_rep),
             "qualifier":          _numeric_str(qualifier),
+            "goal_distribution":  goal_distribution,
         })
 
     return records, skipped, header_row
@@ -716,6 +729,9 @@ def build_tracker_row(key, recs):
 def build_ptg_row(rec):
     is_dist   = rec["goal_type"] in POD_ATTR_TYPES
     is_volume = rec["goal_type"] in VOLUME_TYPES
+    is_fixed_per_rep = rec["goal_distribution"] == FIXED_GOAL_DISTRIBUTION
+    distribution_target = rec["mkt_seg_goal"]
+    min_objective_target = distribution_target if is_fixed_per_rep else (rec["min_goal_per_rep"] or "1")
     return {
         "goal_category":                  "PTG",
         "goal_name":                      rec["ptg_name"],
@@ -738,10 +754,10 @@ def build_ptg_row(rec):
         "unsold_end_date":                "",
         "product_collection_id":          "",
         "customer_collection_id":         "",
-        "distribution_target":            rec["mkt_seg_goal"],
-        "min_objective_target":           rec["min_goal_per_rep"] or "1",
+        "distribution_target":            distribution_target,
+        "min_objective_target":           min_objective_target,
         "distribution_level_path":        CONFIG["distribution_level_path"],
-        "pod_attribute":                  rec["pod_attribute"] if is_dist else "",
+        "pod_attribute":                  (rec["pod_attribute"] or "ProductId") if is_dist else "",
         "achievement_min":                "" if is_volume else rec["qualifier"],
     }
 

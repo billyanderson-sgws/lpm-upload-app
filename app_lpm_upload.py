@@ -87,7 +87,9 @@ def get_state_collections(state, source):
             with zf.open("xl/_rels/workbook.xml.rels") as f:
                 rels_tree = ET.parse(f)
             for rel in rels_tree.findall(f"{{{PKG_NS}}}Relationship"):
-                rid_to_path[rel.get("Id")] = "xl/" + rel.get("Target").lstrip("/")
+                target = rel.get("Target")
+                path = target.lstrip("/") if target.startswith("/") else "xl/" + target
+                rid_to_path[rel.get("Id")] = path
 
         target = "Collection ID List"
         candidate = None
@@ -110,6 +112,12 @@ def get_state_collections(state, source):
 
         def cell_val(c_elem):
             t = c_elem.get("t", "n")
+            if t == "inlineStr":
+                is_elem = c_elem.find(f"{{{NS}}}is")
+                if is_elem is None:
+                    return ""
+                parts = is_elem.findall(f".//{{{NS}}}t")
+                return "".join(p.text or "" for p in parts)
             v = c_elem.find(f"{{{NS}}}v")
             if v is None or v.text is None:
                 return ""
