@@ -86,8 +86,8 @@ POD_ATTR_TYPES = {"DistributionNewPODs", "DistributionPODs"}
 
 # Tracking Table "Goal Distribution" (col 20) value that marks a fixed-per-salesperson goal
 FIXED_GOAL_DISTRIBUTION = "Fixed Goal per Salesperson"
-# ...and the value that marks a goal split evenly among reps. Both of these use the
-# Market Segment Goal itself as the per-rep target rather than "Min Goal per Rep".
+# ...and the value that marks a goal split evenly among reps. Both of these leave
+# min_objective_target blank — the goal itself is carried in distribution_target.
 EVEN_GOAL_DISTRIBUTION = "Even Goal (Unit Goal split evenly among reps)"
 NO_MIN_FALLBACK_DISTRIBUTIONS = {FIXED_GOAL_DISTRIBUTION, EVEN_GOAL_DISTRIBUTION}
 
@@ -735,7 +735,7 @@ def build_ptg_row(rec):
     is_volume = rec["goal_type"] in VOLUME_TYPES
     is_fixed_or_even = rec["goal_distribution"] in NO_MIN_FALLBACK_DISTRIBUTIONS
     distribution_target = rec["mkt_seg_goal"]
-    min_objective_target = distribution_target if is_fixed_or_even else (rec["min_goal_per_rep"] or "1")
+    min_objective_target = "" if is_fixed_or_even else (rec["min_goal_per_rep"] or "1")
     return {
         "goal_category":                  "PTG",
         "goal_name":                      rec["ptg_name"],
