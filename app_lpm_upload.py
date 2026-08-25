@@ -158,12 +158,17 @@ def get_state_collections(state, source):
 
 def auto_match(group_name, state, collections):
     """
-    Pre-select a collection for a goal group using the CI prefix pattern.
-    Tries 'CI - {STATE} SPP - {group}', 'CI - {STATE} - SPP - {group}',
-    and 'CI - SPP - {STATE} - {group}' (state after SPP instead of before).
+    Pre-select a collection for a goal group.
+    Tries group_name as-is first (some Goal Builders already store the full
+    Salesforce collection name, e.g. 'CI - SPP - MN - ALD On Premise'), then
+    falls back to the CI prefix patterns 'CI - {STATE} SPP - {group}',
+    'CI - {STATE} - SPP - {group}', and 'CI - SPP - {STATE} - {group}'
+    (state after SPP instead of before) for Goal Builders that only store
+    the short group label, e.g. 'Combo'.
     Falls back to None if no match found.
     """
     candidates = [
+        group_name,
         f"CI - {state.upper()} SPP - {group_name}",
         f"CI - {state.upper()} - SPP - {group_name}",
         f"CI - SPP - {state.upper()} - {group_name}",
