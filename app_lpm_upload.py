@@ -159,12 +159,14 @@ def get_state_collections(state, source):
 def auto_match(group_name, state, collections):
     """
     Pre-select a collection for a goal group using the CI prefix pattern.
-    Tries 'CI - {STATE} SPP - {group}' then 'CI - {STATE} - SPP - {group}'.
+    Tries 'CI - {STATE} SPP - {group}', 'CI - {STATE} - SPP - {group}',
+    and 'CI - SPP - {STATE} - {group}' (state after SPP instead of before).
     Falls back to None if no match found.
     """
     candidates = [
         f"CI - {state.upper()} SPP - {group_name}",
         f"CI - {state.upper()} - SPP - {group_name}",
+        f"CI - SPP - {state.upper()} - {group_name}",
     ]
     for candidate in candidates:
         for cname in collections:
