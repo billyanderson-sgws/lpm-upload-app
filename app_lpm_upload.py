@@ -324,6 +324,7 @@ if generate_clicked and goal_builder_file is not None:
                 # Apply the manual mapping from the dropdowns
                 state = gen.derive_state_from_filename(gb_path)
                 gen.COLLECTION_LOOKUP = st.session_state.get("manual_mapping", {})
+                gen.CURRENT_STATE = state
 
                 records, skipped, header_row = gen.load_tracking_table(gb_path)
                 if not records:

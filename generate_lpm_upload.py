@@ -680,6 +680,32 @@ def group_records(records):
 
 COLLECTION_LOOKUP = {}  # populated in main() after loading the collection file
 FISCAL_LOOKUP     = {}  # supplier name (lowercase) -> fiscal start YYYYMM
+CURRENT_STATE     = ""  # set alongside COLLECTION_LOOKUP; used to strip the CI prefix for display
+
+# Same three prefix conventions auto_match() in app_lpm_upload.py checks for.
+_CI_PREFIX_TEMPLATES = [
+    "CI - {state} SPP - ",
+    "CI - {state} - SPP - ",
+    "CI - SPP - {state} - ",
+]
+
+
+def strip_ci_prefix(goal_group, state):
+    """
+    Strip a 'CI - ... SPP - ...' prefix from a goal group name for display,
+    e.g. 'CI - SPP - MN - ALD On Premise' -> 'ALD On Premise'. Goal Builders
+    that already store just the short label (e.g. 'Combo') are returned
+    unchanged, since no prefix matches. Only affects the output goal_name —
+    the raw goal_group is still used for collection lookup and grouping.
+    """
+    if not goal_group or not state:
+        return goal_group
+    lower = goal_group.lower()
+    for template in _CI_PREFIX_TEMPLATES:
+        prefix = template.format(state=state.upper())
+        if lower.startswith(prefix.lower()):
+            return goal_group[len(prefix):]
+    return goal_group
 
 
 def build_tracker_row(key, recs):
@@ -702,7 +728,7 @@ def build_tracker_row(key, recs):
 
     return {
         "goal_category":                  "Tracker",
-        "goal_name":                      goal_group,
+        "goal_name":                      strip_ci_prefix(goal_group, CURRENT_STATE),
         "tpm_nav_ref":                    "",
         "goal_type":                      goal_type,
         "goal_description":               "",
@@ -876,8 +902,9 @@ def main():
         print("Fiscal lookup not found — FYTD unsold periods will fall back to CYTD.")
 
     # Load collection ID lookup
-    global COLLECTION_LOOKUP
+    global COLLECTION_LOOKUP, CURRENT_STATE
     state = derive_state_from_filename(input_path)
+    CURRENT_STATE = state
     if collection_path and os.path.isfile(collection_path):
         COLLECTION_LOOKUP = load_collection_lookup(collection_path, state)
         print(f"State: {state}  |  Collection IDs loaded: {len(COLLECTION_LOOKUP)}  ({os.path.basename(collection_path)})")
