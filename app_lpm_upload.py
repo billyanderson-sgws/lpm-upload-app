@@ -156,22 +156,51 @@ def get_state_collections(state, source):
         return {}
 
 
+_CI_PREFIX_TEMPLATES = [
+    "CI - {state} SPP - ",
+    "CI - {state} - SPP - ",
+    "CI - SPP - {state} - ",
+]
+
+
+def _bare_group_label(group_name, state):
+    """Strip a known CI prefix from group_name, if present, to get the bare
+    short label (e.g. 'CI - SPP - OK - ATLANTIC PACKAGE' -> 'ATLANTIC PACKAGE').
+    Returns group_name unchanged if no known prefix matches (already-bare
+    labels like 'Combo')."""
+    if not group_name:
+        return group_name
+    lower = group_name.lower()
+    for template in _CI_PREFIX_TEMPLATES:
+        prefix = template.format(state=state.upper())
+        if lower.startswith(prefix.lower()):
+            return group_name[len(prefix):]
+    return group_name
+
+
 def auto_match(group_name, state, collections):
     """
     Pre-select a collection for a goal group.
-    Tries group_name as-is first (some Goal Builders already store the full
-    Salesforce collection name, e.g. 'CI - SPP - MN - ALD On Premise'), then
-    falls back to the CI prefix patterns 'CI - {STATE} SPP - {group}',
-    'CI - {STATE} - SPP - {group}', and 'CI - SPP - {STATE} - {group}'
-    (state after SPP instead of before) for Goal Builders that only store
-    the short group label, e.g. 'Combo'.
+    Some Goal Builders already store the full Salesforce collection name in
+    the group field (e.g. 'CI - SPP - MN - ALD On Premise'); others store
+    just the short label (e.g. 'Combo'). Different states also use different
+    prefix conventions for their actual Salesforce collections -- state
+    before SPP ('CI - OK - SPP - X') or after ('CI - SPP - OK - X') -- and
+    a Goal Builder's embedded prefix doesn't always match its own state's
+    collection convention (e.g. OK Goal Builders embed 'CI - SPP - OK - X'
+    but OK's collections are actually named 'CI - OK - SPP - X').
+    So: strip whichever prefix (if any) is already in group_name to get the
+    bare label, then try the bare label as-is plus all three prefix
+    conventions rebuilt from it, plus the original group_name unchanged.
     Falls back to None if no match found.
     """
+    bare = _bare_group_label(group_name, state)
     candidates = [
         group_name,
-        f"CI - {state.upper()} SPP - {group_name}",
-        f"CI - {state.upper()} - SPP - {group_name}",
-        f"CI - SPP - {state.upper()} - {group_name}",
+        bare,
+        f"CI - {state.upper()} SPP - {bare}",
+        f"CI - {state.upper()} - SPP - {bare}",
+        f"CI - SPP - {state.upper()} - {bare}",
     ]
     for candidate in candidates:
         for cname in collections:
