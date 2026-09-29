@@ -1,2 +1,4 @@
 streamlit==1.41.1
 openpyxl==3.1.5
+pandas
+pyxlsb

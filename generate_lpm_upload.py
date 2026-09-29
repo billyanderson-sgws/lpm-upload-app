@@ -16,6 +16,7 @@ Collection IDs are looked up from the Collection ID List sheet in the collection
 
 import csv
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime
@@ -180,7 +181,57 @@ def _yyyymm_subtract_months(yyyymm, months):
     return f"{year}{month:02d}"
 
 
-def compute_unsold_dates(unsold_prd, goal_start_yyyymm, supplier_name="", goal_end_yyyymm=""):
+MONTH_NAME_TO_NUM = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+}
+
+
+def resolve_fytd_lookup_name(rec):
+    """
+    Which name to use for the FYTD fiscal lookup: Supplier column first; if
+    that's blank AND Level of Detail == "Supplier", use the Selection column
+    instead. This same resolved name is used against both the internal (live)
+    and external fiscal lookups below.
+    """
+    supplier_name = safe_str(rec.get("supplier"))
+    if supplier_name:
+        return supplier_name
+    if safe_str(rec.get("level_detail")) == "Supplier":
+        return safe_str(rec.get("selection"))
+    return ""
+
+
+def resolve_fytd_start_month(rec, goal_start_yyyymm):
+    """
+    Resolve the FYTD fiscal-year-start month for a record:
+      1. Resolve the lookup name per resolve_fytd_lookup_name() (Supplier, or
+         Selection if Supplier is blank and Level of Detail == "Supplier").
+      2. Check the workbook's own internal FISCAL sheet first (INTERNAL_FISCAL_LOOKUP)
+         — it's refreshed independently of this script, so it's the more current
+         source. It only has a month name, no year.
+      3. If not found there, check the external FISCAL_LOOKUP (Supplier Fiscal
+         Start Month.xlsx) — this file stores a full YYYYMM, used as-is.
+      4. Default to January of the goal's start year (i.e. plain CYTD).
+    """
+    year = goal_start_yyyymm[:4]
+    lookup_name = resolve_fytd_lookup_name(rec)
+
+    if lookup_name:
+        month_name = INTERNAL_FISCAL_LOOKUP.get(lookup_name.lower())
+        if month_name:
+            month_num = MONTH_NAME_TO_NUM.get(str(month_name).strip().lower())
+            if month_num:
+                return f"{year}{month_num:02d}"
+
+        hit = FISCAL_LOOKUP.get(lookup_name.lower())
+        if hit:
+            return hit
+
+    return f"{year}01"
+
+
+def compute_unsold_dates(unsold_prd, goal_start_yyyymm, rec=None, goal_end_yyyymm=""):
     """
     Compute (unsold_start_yyyymm, unsold_end_yyyymm) from the unsold period value
     and the tracker's incentive start/end months.
@@ -189,8 +240,9 @@ def compute_unsold_dates(unsold_prd, goal_start_yyyymm, supplier_name="", goal_e
       - R12: unsold_end = one month prior to tracking end; unsold_start = 12 months prior to that.
              e.g. July-July tracker (end=202707) -> unsold_end=202706, unsold_start=202507.
       - CYTD: January of the incentive start year through one month prior to start.
-      - FYTD: Supplier's fiscal start month (from FISCAL_LOOKUP) through one month
-              prior to incentive start. Falls back to CYTD if supplier not found.
+      - FYTD: resolved via resolve_fytd_start_month()'s fallback chain (division
+              tab's live Supplier Fiscal Start column -> Supplier -> Selection ->
+              January), through one month prior to incentive start.
       - Numeric day value (e.g. "30", "90", "30 days"): assume 30 days = 1 month.
         unsold_end   = one month prior to incentive start.
         unsold_start = N months prior to incentive start.
@@ -215,12 +267,8 @@ def compute_unsold_dates(unsold_prd, goal_start_yyyymm, supplier_name="", goal_e
         return f"{year}01", unsold_end
 
     if prd.upper() == "FYTD":
-        fiscal_start = FISCAL_LOOKUP.get(supplier_name.lower(), "")
-        if fiscal_start:
-            return fiscal_start, unsold_end
-        # Fall back to CYTD if supplier not in lookup
-        year = goal_start_yyyymm[:4]
-        return f"{year}01", unsold_end
+        fiscal_start = resolve_fytd_start_month(rec or {}, goal_start_yyyymm)
+        return fiscal_start, unsold_end
 
     # Extract leading number — handles "30", "90 days", "90 Days", "30 day", etc.
     import re as _re
@@ -320,6 +368,22 @@ def derive_state_from_filename(filepath):
     name = os.path.splitext(os.path.basename(filepath))[0]
     # First token before a space is the state abbreviation
     return name.split()[0].upper()
+
+
+def derive_state_from_goal_group(goal_group):
+    """
+    Extract state abbreviation from a Tracking Table Goal Group value, e.g.
+    'CI - SPP - NV - COMBO (NNV +SEAN DRESCHER)' -> 'NV'. More reliable than
+    the filename in cases like '10 OCT 2026 - NV SPP Goal Template.xlsm',
+    where the state isn't the first filename token.
+    """
+    m = re.match(r"CI\s*-\s*SPP\s*-\s*([A-Za-z]{2})\s*-", goal_group or "", re.IGNORECASE)
+    return m.group(1).upper() if m else ""
+
+
+def extract_alpha_category(value):
+    """Strip digits from a Category value to get its family, e.g. 'Wine 2' -> 'Wine'."""
+    return re.sub(r"\d+", "", safe_str(value)).strip()
 
 
 def _parse_collection_sheet_raw(file_source, state):
@@ -551,6 +615,7 @@ def load_tracking_table(wb_path):
         # col 23 = Min Cases, col 24 = Min Facings (not used)
         pod_attr        = cv(25)
         # col 26 not used
+        category        = safe_str(cv(27)) if ws.max_column >= 27 else ""
 
         raw_row = [ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
 
@@ -638,6 +703,9 @@ def load_tracking_table(wb_path):
             "min_goal_per_rep":   _numeric_str(min_goal_per_rep),
             "qualifier":          _numeric_str(qualifier),
             "goal_distribution":  goal_distribution,
+            "level_detail":       level_detail,
+            "selection":          safe_str(selection),
+            "category":           category,
         })
 
     return records, skipped, header_row
@@ -650,7 +718,7 @@ def load_tracking_table(wb_path):
 def group_key(rec):
     # Unsold period only applies to NPOD/NACS — don't let it split other trackers
     unsold = rec["unsold_prd"] if rec["goal_type"] in UNSOLD_TYPES else ""
-    return (
+    key = (
         rec["goal_group"],
         rec["spp_tier"],
         rec["goal_type"],
@@ -661,6 +729,13 @@ def group_key(rec):
         rec["basis_end_yyyymm"],
         unsold,
     )
+    # NV only: on top of the normal grouping above, also split/merge by the
+    # Category column's alpha family (Wine/Beer/Spirits, digits stripped) so
+    # e.g. "Wine 2" and "Wine 4" land in the same Tracker but "Wine 2" and
+    # "Spirits 2" don't, even when everything else about the row matches.
+    if CURRENT_STATE == "NV":
+        key = key + (extract_alpha_category(rec.get("category", "")),)
+    return key
 
 
 def group_records(records):
@@ -678,9 +753,31 @@ def group_records(records):
 # Build CSV rows
 # ---------------------------------------------------------------------------
 
-COLLECTION_LOOKUP = {}  # populated in main() after loading the collection file
-FISCAL_LOOKUP     = {}  # supplier name (lowercase) -> fiscal start YYYYMM
+COLLECTION_LOOKUP        = {}  # populated in main() after loading the collection file
+FISCAL_LOOKUP            = {}  # supplier name (lowercase) -> fiscal start YYYYMM (external file)
+INTERNAL_FISCAL_LOOKUP   = {}  # supplier name (lowercase) -> fiscal month name (workbook's own FISCAL sheet)
 CURRENT_STATE     = ""  # set alongside COLLECTION_LOOKUP; used to strip the CI prefix for display
+
+
+def load_internal_fiscal_lookup(wb_data_only):
+    """
+    Read the workbook's own "FISCAL" sheet (col A = supplier name, col B =
+    fiscal month name, e.g. "January") into {supplier name lowercase -> month
+    name}. This is the "live" source the per-division tabs' (currently broken)
+    Supplier Fiscal Start formula also draws from — refreshed independently of
+    this script, so it's checked before the external Supplier Fiscal Start
+    Month.xlsx file.
+    """
+    lookup = {}
+    if "FISCAL" not in wb_data_only.sheetnames:
+        return lookup
+    ws = wb_data_only["FISCAL"]
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        name = safe_str(row[0]) if len(row) > 0 else ""
+        month = safe_str(row[1]) if len(row) > 1 else ""
+        if name and month:
+            lookup[name.lower()] = month
+    return lookup
 
 # Same three prefix conventions auto_match() in app_lpm_upload.py checks for.
 _CI_PREFIX_TEMPLATES = [
@@ -709,7 +806,8 @@ def strip_ci_prefix(goal_group, state):
 
 
 def build_tracker_row(key, recs):
-    goal_group, spp_tier, goal_type, goal_uom_key, start, end, basis_start, basis_end, unsold_prd = key
+    # key has an extra trailing element (category family) for NV — ignore it here.
+    goal_group, spp_tier, goal_type, goal_uom_key, start, end, basis_start, basis_end, unsold_prd = key[:9]
 
     # UOM: use most common value across the group's records
     uom_counts = defaultdict(int)
@@ -723,8 +821,7 @@ def build_tracker_row(key, recs):
     # Unsold dates — NPOD and NACS only
     unsold_start, unsold_end = "", ""
     if unsold_prd and goal_type in UNSOLD_TYPES:
-        supplier_name = recs[0].get("supplier", "")
-        unsold_start, unsold_end = compute_unsold_dates(unsold_prd, start, supplier_name, end)
+        unsold_start, unsold_end = compute_unsold_dates(unsold_prd, start, recs[0], end)
 
     return {
         "goal_category":                  "Tracker",
@@ -796,6 +893,29 @@ def build_ptg_row(rec):
 # Write output
 # ---------------------------------------------------------------------------
 
+def find_duplicate_ptg_names(order, groups):
+    """
+    Every source row always becomes its own PTG row — rows are never merged
+    here. But LPM itself keys a PTG by its goal_name within a Tracker, so two
+    distinct rows sharing the exact same PTG name under the same Tracker can
+    collide/overwrite each other on import even though this script emits them
+    as separate lines. Flag those so they get caught before upload.
+
+    Returns a list of {"tracker": goal_name, "ptg_name": ..., "row_nums": [...]}.
+    """
+    dupes = []
+    for key in order:
+        recs = groups[key]
+        by_name = defaultdict(list)
+        for r in recs:
+            by_name[r["ptg_name"]].append(r["row_num"])
+        tracker_name = key[0]
+        for name, row_nums in by_name.items():
+            if len(row_nums) > 1:
+                dupes.append({"tracker": tracker_name, "ptg_name": name, "row_nums": row_nums})
+    return dupes
+
+
 def generate_output(order, groups, output_path):
     total_trackers = 0
     total_ptgs = 0
@@ -830,7 +950,7 @@ def write_skipped_csv(skipped_path, skipped, header_row):
             writer.writerow([entry["reason"]] + entry["raw_row"])
 
 
-def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped):
+def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names=None):
     print()
     print("=" * 65)
     print("LPM Upload Generation Summary")
@@ -848,6 +968,10 @@ def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped
             print(f"  {entry['row_num']:<5}  {entry['raw_row'][0] or '':<20}  {entry['reason']}")
     else:
         print("\nAll rows processed successfully — no skipped rows.")
+    if duplicate_names:
+        print(f"\n*** {len(duplicate_names)} PTG name(s) repeat within the same Tracker — LPM may treat them as one on import ***")
+        for d in duplicate_names:
+            print(f"  Tracker '{d['tracker']}' | PTG '{d['ptg_name']}' | source rows: {d['row_nums']}")
     print("=" * 65)
 
 
@@ -901,9 +1025,28 @@ def main():
     else:
         print("Fiscal lookup not found — FYTD unsold periods will fall back to CYTD.")
 
+    # Peek the workbook once for: (a) state (more reliable from the sheet's own
+    # "CI - SPP - XX - ..." Goal Group text than from the filename, which isn't
+    # always "XX ..." — e.g. "10 OCT 2026 - NV SPP Goal Template.xlsm" starts
+    # with a number, not "NV"), and (b) the internal FISCAL sheet.
+    global INTERNAL_FISCAL_LOOKUP
+    wb_for_fiscal = openpyxl.load_workbook(input_path, keep_vba=True, data_only=True)
+    INTERNAL_FISCAL_LOOKUP = load_internal_fiscal_lookup(wb_for_fiscal)
+
+    state_from_sheet = ""
+    if "Tracking Table" in wb_for_fiscal.sheetnames:
+        tt = wb_for_fiscal["Tracking Table"]
+        for r in range(2, tt.max_row + 1):
+            gg = tt.cell(r, 1).value
+            if gg:
+                state_from_sheet = derive_state_from_goal_group(str(gg))
+                if state_from_sheet:
+                    break
+    wb_for_fiscal.close()
+
     # Load collection ID lookup
     global COLLECTION_LOOKUP, CURRENT_STATE
-    state = derive_state_from_filename(input_path)
+    state = state_from_sheet or derive_state_from_filename(input_path)
     CURRENT_STATE = state
     if collection_path and os.path.isfile(collection_path):
         COLLECTION_LOOKUP = load_collection_lookup(collection_path, state)
@@ -912,6 +1055,8 @@ def main():
             print(f"  {name} -> {cid}")
     else:
         print(f"State: {state}  |  No collection report found — salesforce_collection_ids will be blank.")
+
+    print(f"Internal FISCAL sheet entries: {len(INTERNAL_FISCAL_LOOKUP)}")
 
     print(f"Reading: {input_path}")
     records, skipped, header_row = load_tracking_table(input_path)
@@ -922,11 +1067,12 @@ def main():
 
     order, groups = group_records(records)
     total_trackers, total_ptgs = generate_output(order, groups, output_path)
+    duplicate_names = find_duplicate_ptg_names(order, groups)
 
     if skipped:
         write_skipped_csv(skipped_path, skipped, header_row)
 
-    print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped)
+    print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names)
 
 
 if __name__ == "__main__":

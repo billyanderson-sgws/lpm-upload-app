@@ -1,5 +1,5 @@
 """
-Streamlit web app for the SPP LPM Upload Generator.
+Streamlit web app for the LPM Upload Generator (SPP + NY SOD).
 
 Run with:
     streamlit run app_lpm_upload.py
@@ -16,12 +16,14 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate_lpm_upload as gen
+import generate_sod_upload as sodgen
+import ny_sod_revision_recap as recap
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="SPP LPM Upload Generator",
+    page_title="LPM Upload Generator",
     page_icon="📊",
     layout="centered",
 )
@@ -30,7 +32,7 @@ _APP_DIR = Path(__file__).resolve().parent
 BUNDLED_COLLECTION = str(_APP_DIR / "LPM Salesforce and Overlay Collection Report.xlsx")
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 def extract_goal_groups(xlsm_bytes):
@@ -210,243 +212,492 @@ def auto_match(group_name, state, collections):
 
 
 # ---------------------------------------------------------------------------
+# Tab 1: SPP Generator
+# ---------------------------------------------------------------------------
+
+def render_spp_tab():
+    st.subheader("SPP LPM Upload Generator")
+    st.caption(
+        "Upload a Goal Builder `.xlsm` file, confirm the Collection ID mapping, "
+        "and generate the LPM upload CSV. State is read from the sheet's Goal "
+        "Group text (falls back to the filename if that's not found)."
+    )
+
+    goal_builder_file = st.file_uploader(
+        "Goal Builder (.xlsm)",
+        type=["xlsm"],
+        key="spp_goal_builder_file",
+    )
+
+    collection_file = st.file_uploader(
+        "Override Collection Report (.xlsx) — optional",
+        type=["xlsx"],
+        help="Leave blank to use the bundled collection report.",
+        key="spp_collection_file",
+    )
+
+    if "spp_last_gb_name" not in st.session_state:
+        st.session_state.spp_last_gb_name = None
+
+    if goal_builder_file and goal_builder_file.name != st.session_state.spp_last_gb_name:
+        st.session_state.spp_last_gb_name   = goal_builder_file.name
+        st.session_state.spp_goal_groups    = None
+        st.session_state.spp_manual_mapping = {}
+        st.session_state.spp_result         = None
+
+    if goal_builder_file:
+        state = gen.derive_state_from_filename(goal_builder_file.name)
+
+        if collection_file:
+            coll_source = collection_file.getvalue()
+            coll_source_label = f"Uploaded: {collection_file.name}"
+        elif Path(BUNDLED_COLLECTION).is_file():
+            coll_source = BUNDLED_COLLECTION
+            coll_source_label = f"Bundled: {Path(BUNDLED_COLLECTION).name}"
+        else:
+            coll_source = None
+            coll_source_label = "No collection report found"
+
+        collections = get_state_collections(state, coll_source) if coll_source else {}
+        st.caption(f"Collection report: {coll_source_label}")
+
+        if st.session_state.get("spp_goal_groups") is None:
+            with st.spinner("Reading Goal Builder…"):
+                st.session_state.spp_goal_groups = extract_goal_groups(goal_builder_file.getvalue())
+
+        goal_groups = st.session_state.spp_goal_groups
+
+        if goal_groups and collections:
+            with st.expander("Collection ID Mapping", expanded=True):
+                st.caption(
+                    f"State: **{state}** — {len(collections)} collection(s) available. "
+                    "Match each Goal Group to its Salesforce Collection ID."
+                )
+                options = ["(none)"] + list(collections.keys())
+                manual_mapping = {}
+
+                with st.container(height=400):
+                    for group in goal_groups:
+                        best = auto_match(group, state, collections)
+                        default_idx = options.index(best) if best and best in options else 0
+                        selected = st.selectbox(
+                            group,
+                            options,
+                            index=default_idx,
+                            key=f"spp_cmap_{group}",
+                        )
+                        if selected != "(none)":
+                            manual_mapping[group.lower()] = collections[selected]
+
+                st.session_state.spp_manual_mapping = manual_mapping
+
+        elif goal_groups and not collections:
+            st.info(
+                f"State: **{state}** — no collections found in the collection report. "
+                "`salesforce_collection_ids` will be blank."
+            )
+
+    generate_clicked = st.button(
+        "Generate CSV",
+        type="primary",
+        disabled=(goal_builder_file is None),
+        use_container_width=True,
+        key="spp_generate_button",
+    )
+
+    if generate_clicked and goal_builder_file is not None:
+        with st.spinner("Processing Tracking Table…"):
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    gb_path = os.path.join(tmpdir, goal_builder_file.name)
+                    with open(gb_path, "wb") as f:
+                        f.write(goal_builder_file.getvalue())
+
+                    output_path  = os.path.join(tmpdir, "lpm_upload.csv")
+                    skipped_path = os.path.join(tmpdir, "lpm_skipped.csv")
+
+                    wb_for_fiscal = openpyxl.load_workbook(gb_path, keep_vba=True, data_only=True)
+                    gen.INTERNAL_FISCAL_LOOKUP = gen.load_internal_fiscal_lookup(wb_for_fiscal)
+                    state_from_sheet = ""
+                    if "Tracking Table" in wb_for_fiscal.sheetnames:
+                        tt = wb_for_fiscal["Tracking Table"]
+                        for r in range(2, tt.max_row + 1):
+                            ggv = tt.cell(r, 1).value
+                            if ggv:
+                                state_from_sheet = gen.derive_state_from_goal_group(str(ggv))
+                                if state_from_sheet:
+                                    break
+                    wb_for_fiscal.close()
+
+                    state = state_from_sheet or gen.derive_state_from_filename(gb_path)
+                    gen.COLLECTION_LOOKUP = st.session_state.get("spp_manual_mapping", {})
+                    gen.CURRENT_STATE = state
+
+                    fiscal_path = _APP_DIR / "Supplier Fiscal Start Month.xlsx"
+                    gen.FISCAL_LOOKUP = gen.load_fiscal_lookup(str(fiscal_path)) if fiscal_path.is_file() else {}
+
+                    records, skipped, header_row = gen.load_tracking_table(gb_path)
+                    if not records:
+                        raise ValueError("No valid records found in the Tracking Table after filtering.")
+
+                    order, groups = gen.group_records(records)
+                    total_trackers, total_ptgs = gen.generate_output(order, groups, output_path)
+                    duplicate_names = gen.find_duplicate_ptg_names(order, groups)
+
+                    if skipped:
+                        gen.write_skipped_csv(skipped_path, skipped, header_row)
+
+                    with open(output_path, "rb") as f:
+                        output_bytes = f.read()
+
+                    skipped_bytes = None
+                    if skipped and os.path.exists(skipped_path):
+                        with open(skipped_path, "rb") as f:
+                            skipped_bytes = f.read()
+
+                    collection_info = [
+                        f"{group}  →  {cid}"
+                        for group, cid in sorted(gen.COLLECTION_LOOKUP.items())
+                    ]
+
+                st.session_state.spp_result = {
+                    "error":            None,
+                    "state":            state,
+                    "total_trackers":   total_trackers,
+                    "total_ptgs":       total_ptgs,
+                    "skipped":          skipped,
+                    "duplicate_names":  duplicate_names,
+                    "output_bytes":     output_bytes,
+                    "skipped_bytes":    skipped_bytes,
+                    "base_name":        os.path.splitext(goal_builder_file.name)[0],
+                    "collection_info":  collection_info,
+                }
+
+            except Exception as exc:
+                st.session_state.spp_result = {"error": str(exc)}
+
+    result = st.session_state.get("spp_result")
+
+    if result:
+        st.markdown("---")
+
+        if result.get("error"):
+            st.error(f"**Error:** {result['error']}")
+        else:
+            if result["collection_info"]:
+                with st.expander(
+                    f"State: **{result['state']}** — {len(result['collection_info'])} collection ID(s) applied",
+                    expanded=False,
+                ):
+                    for line in result["collection_info"]:
+                        st.text(line)
+            else:
+                st.info("`salesforce_collection_ids` will be blank — no collections were mapped.")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Trackers", result["total_trackers"])
+            c2.metric("PTGs", result["total_ptgs"])
+            c3.metric("Skipped rows", len(result["skipped"]))
+
+            if result["skipped"]:
+                st.warning(f"⚠️ {len(result['skipped'])} row(s) were skipped — review before uploading.")
+                with st.expander("View skipped rows"):
+                    for entry in result["skipped"]:
+                        goal_group = (entry["raw_row"][0] or "") if entry["raw_row"] else ""
+                        st.markdown(
+                            f"**Row {entry['row_num']}** &nbsp;·&nbsp; "
+                            f"`{goal_group}` &nbsp;·&nbsp; {entry['reason']}"
+                        )
+            else:
+                st.success("✅ All rows processed — no skipped rows.")
+
+            if result.get("duplicate_names"):
+                st.warning(
+                    f"⚠️ {len(result['duplicate_names'])} PTG name(s) repeat within the same Tracker — "
+                    "LPM may treat them as one on import."
+                )
+                with st.expander("View repeated PTG names"):
+                    for d in result["duplicate_names"]:
+                        st.markdown(
+                            f"Tracker `{d['tracker']}` · PTG `{d['ptg_name']}` · source rows: {d['row_nums']}"
+                        )
+
+            st.markdown("")
+
+            base = result["base_name"]
+            st.download_button(
+                label="⬇️  Download LPM Upload CSV",
+                data=result["output_bytes"],
+                file_name=f"{base}_lpm_upload.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="spp_download_csv",
+            )
+            if result["skipped_bytes"]:
+                st.download_button(
+                    label="⬇️  Download Skipped Rows CSV",
+                    data=result["skipped_bytes"],
+                    file_name=f"{base}_skipped.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="spp_download_skipped",
+                )
+
+
+# ---------------------------------------------------------------------------
+# Tab 2: NY SOD Generator
+# ---------------------------------------------------------------------------
+
+def render_sod_tab():
+    st.subheader("NY SOD LPM Upload Generator")
+    st.caption(
+        "Upload a NY Monthly Quota Planner `.xlsb` file (the GOAL SHEET tab) "
+        "and generate the LPM upload CSV."
+    )
+
+    sod_file = st.file_uploader(
+        "NY SOD Goal Sheet (.xlsb)",
+        type=["xlsb"],
+        key="sod_goal_sheet_file",
+    )
+
+    generate_clicked = st.button(
+        "Generate CSV",
+        type="primary",
+        disabled=(sod_file is None),
+        use_container_width=True,
+        key="sod_generate_button",
+    )
+
+    if generate_clicked and sod_file is not None:
+        with st.spinner("Processing GOAL SHEET…"):
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    sod_path = os.path.join(tmpdir, sod_file.name)
+                    with open(sod_path, "wb") as f:
+                        f.write(sod_file.getvalue())
+
+                    output_path  = os.path.join(tmpdir, "sod_upload.csv")
+                    skipped_path = os.path.join(tmpdir, "sod_skipped.csv")
+
+                    if Path(BUNDLED_COLLECTION).is_file():
+                        sodgen.spp.COLLECTION_LOOKUP = sodgen.spp.load_collection_lookup(BUNDLED_COLLECTION, "NY")
+                    else:
+                        sodgen.spp.COLLECTION_LOOKUP = {}
+
+                    records, skipped, anchor_year, anchor_month = sodgen.load_goal_sheet(sod_path)
+                    if not records:
+                        raise ValueError("No valid records found in the GOAL SHEET after filtering.")
+
+                    order, groups = sodgen.group_records(records)
+                    total_trackers, total_ptgs = sodgen.generate_output(order, groups, output_path)
+                    duplicate_names = sodgen.find_duplicate_ptg_names(order, groups)
+
+                    if skipped:
+                        sodgen.write_skipped_csv(skipped_path, skipped)
+
+                    with open(output_path, "rb") as f:
+                        output_bytes = f.read()
+
+                    skipped_bytes = None
+                    if skipped and os.path.exists(skipped_path):
+                        with open(skipped_path, "rb") as f:
+                            skipped_bytes = f.read()
+
+                st.session_state.sod_result = {
+                    "error":           None,
+                    "anchor_year":     anchor_year,
+                    "anchor_month":    anchor_month,
+                    "total_trackers":  total_trackers,
+                    "total_ptgs":      total_ptgs,
+                    "skipped":         skipped,
+                    "duplicate_names": duplicate_names,
+                    "output_bytes":    output_bytes,
+                    "skipped_bytes":   skipped_bytes,
+                    "base_name":       os.path.splitext(sod_file.name)[0],
+                }
+
+            except Exception as exc:
+                st.session_state.sod_result = {"error": str(exc)}
+
+    result = st.session_state.get("sod_result")
+
+    if result:
+        st.markdown("---")
+
+        if result.get("error"):
+            st.error(f"**Error:** {result['error']}")
+        else:
+            st.caption(f"Anchor: year={result['anchor_year']} month={result['anchor_month']}")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Trackers", result["total_trackers"])
+            c2.metric("PTGs", result["total_ptgs"])
+            c3.metric("Skipped rows", len(result["skipped"]))
+
+            if result["skipped"]:
+                st.warning(f"⚠️ {len(result['skipped'])} row(s) were skipped — review before uploading.")
+                with st.expander("View skipped rows"):
+                    for entry in result["skipped"]:
+                        st.markdown(f"**Row {entry['row_num']}** &nbsp;·&nbsp; {entry['reason']}")
+            else:
+                st.success("✅ All rows processed — no skipped rows.")
+
+            if result.get("duplicate_names"):
+                st.warning(
+                    f"⚠️ {len(result['duplicate_names'])} Goal Name(s) repeat within the same Tracker — "
+                    "LPM may treat them as one on import."
+                )
+                with st.expander("View repeated Goal Names"):
+                    for d in result["duplicate_names"]:
+                        st.markdown(
+                            f"Tracker `{d['tracker']}` · Goal Name `{d['ptg_name']}` · source rows: {d['row_nums']}"
+                        )
+
+            st.markdown("")
+
+            base = result["base_name"]
+            st.download_button(
+                label="⬇️  Download SOD Upload CSV",
+                data=result["output_bytes"],
+                file_name=f"{base}_sod_upload.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="sod_download_csv",
+            )
+            if result["skipped_bytes"]:
+                st.download_button(
+                    label="⬇️  Download Skipped Rows CSV",
+                    data=result["skipped_bytes"],
+                    file_name=f"{base}_skipped.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="sod_download_skipped",
+                )
+
+
+# ---------------------------------------------------------------------------
+# Tab 3: NY SOD Revision Recap
+# ---------------------------------------------------------------------------
+
+def render_recap_tab():
+    st.subheader("NY SOD Revision Recap")
+    st.caption(
+        "Upload the earlier INPUT/draft version and the later FINAL/revised version "
+        "of a NY Monthly Quota Planner `.xlsb` file to see exactly what changed, "
+        "was added, or was removed — no need to eyeball the green highlighting by hand. "
+        "NY SOD-specific: this is keyed to the GOAL SHEET column layout and won't work "
+        "against the SPP Goal Builder's Tracking Table."
+    )
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        input_file = st.file_uploader("INPUT / draft (.xlsb)", type=["xlsb"], key="recap_input_file")
+    with col_b:
+        final_file = st.file_uploader("FINAL / revised (.xlsb)", type=["xlsb"], key="recap_final_file")
+
+    compare_clicked = st.button(
+        "Compare",
+        type="primary",
+        disabled=(input_file is None or final_file is None),
+        use_container_width=True,
+        key="recap_compare_button",
+    )
+
+    if compare_clicked and input_file is not None and final_file is not None:
+        with st.spinner("Comparing GOAL SHEET tabs…"):
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    input_path = os.path.join(tmpdir, input_file.name)
+                    final_path = os.path.join(tmpdir, final_file.name)
+                    with open(input_path, "wb") as f:
+                        f.write(input_file.getvalue())
+                    with open(final_path, "wb") as f:
+                        f.write(final_file.getvalue())
+
+                    input_rows = recap.load_rows(input_path)
+                    final_rows = recap.load_rows(final_path)
+                    changes = recap.diff_rows(input_rows, final_rows)
+
+                    output_path = os.path.join(tmpdir, "revision_recap.csv")
+                    recap.write_recap_csv(changes, output_path)
+                    with open(output_path, "rb") as f:
+                        output_bytes = f.read()
+
+                st.session_state.recap_result = {
+                    "error":        None,
+                    "changes":      changes,
+                    "output_bytes": output_bytes,
+                    "base_name":    os.path.splitext(final_file.name)[0],
+                }
+
+            except Exception as exc:
+                st.session_state.recap_result = {"error": str(exc)}
+
+    result = st.session_state.get("recap_result")
+
+    if result:
+        st.markdown("---")
+
+        if result.get("error"):
+            st.error(f"**Error:** {result['error']}")
+        else:
+            changes = result["changes"]
+            added    = [c for c in changes if c["Change Type"] == "Added"]
+            removed  = [c for c in changes if c["Change Type"] == "Removed"]
+            modified = [c for c in changes if c["Change Type"] == "Modified"]
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Modified", len(modified))
+            c2.metric("Added", len(added))
+            c3.metric("Removed", len(removed))
+
+            if changes:
+                st.dataframe(changes, use_container_width=True, hide_index=True)
+            else:
+                st.success("✅ No differences found.")
+
+            st.markdown("")
+
+            base = result["base_name"]
+            st.download_button(
+                label="⬇️  Download Revision Recap CSV",
+                data=result["output_bytes"],
+                file_name=f"{base}_revision_recap.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="recap_download_csv",
+            )
+
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.header("How to use")
+    st.header("LPM Upload Generator")
     st.markdown("""
-1. Upload your **Goal Builder** `.xlsm` file
-2. Confirm the **Collection ID Mapping** for each Goal Group
-3. Click **Generate CSV**
-4. Download the output and review any skipped rows
+Three tools, one app:
+- **SPP Generator** — SPP Goal Builder `.xlsm` → LPM upload CSV
+- **NY SOD Generator** — NY Monthly Quota Planner `.xlsb` → LPM upload CSV
+- **NY SOD Revision Recap** — diff an INPUT vs FINAL NY SOD file
 
----
-**State** is read from the first word of the Goal Builder filename
-(e.g. `SD SPP Goal Builder.xlsm` → **SD**)
-
-The **LPM Collection Report** is bundled automatically.
-Upload a replacement below only if you have a newer version.
+The **LPM Collection Report** is bundled automatically for both generators.
 """)
     st.markdown("---")
     st.caption("LPM Upload Generator · Southern Glazer's")
 
 # ---------------------------------------------------------------------------
-# File uploads
+# Tabs
 # ---------------------------------------------------------------------------
-st.title("SPP LPM Upload Generator")
+st.title("LPM Upload Generator")
 
-goal_builder_file = st.file_uploader(
-    "Goal Builder (.xlsm)",
-    type=["xlsm"],
-    help="State abbreviation is derived from the filename.",
-)
+tab_spp, tab_sod, tab_recap = st.tabs(["SPP Generator", "NY SOD Generator", "NY SOD Revision Recap"])
 
-collection_file = st.file_uploader(
-    "Override Collection Report (.xlsx) — optional",
-    type=["xlsx"],
-    help="Leave blank to use the bundled collection report.",
-)
+with tab_spp:
+    render_spp_tab()
 
-# Reset session state when a new Goal Builder is uploaded
-if "last_gb_name" not in st.session_state:
-    st.session_state.last_gb_name = None
+with tab_sod:
+    render_sod_tab()
 
-if goal_builder_file and goal_builder_file.name != st.session_state.last_gb_name:
-    st.session_state.last_gb_name   = goal_builder_file.name
-    st.session_state.goal_groups    = None
-    st.session_state.manual_mapping = {}
-    st.session_state.result         = None
-
-# ---------------------------------------------------------------------------
-# Collection ID Mapping dropdowns
-# ---------------------------------------------------------------------------
-if goal_builder_file:
-    state = gen.derive_state_from_filename(goal_builder_file.name)
-
-    # Determine collection source
-    if collection_file:
-        coll_source = collection_file.getvalue()
-        coll_source_label = f"Uploaded: {collection_file.name}"
-    elif Path(BUNDLED_COLLECTION).is_file():
-        coll_source = BUNDLED_COLLECTION
-        coll_source_label = f"Bundled: {Path(BUNDLED_COLLECTION).name}"
-    else:
-        coll_source = None
-        coll_source_label = "No collection report found"
-
-    collections = get_state_collections(state, coll_source) if coll_source else {}
-    st.caption(f"Collection report: {coll_source_label}")
-
-    # Parse goal groups once and cache in session state
-    if st.session_state.get("goal_groups") is None:
-        with st.spinner("Reading Goal Builder…"):
-            st.session_state.goal_groups = extract_goal_groups(goal_builder_file.getvalue())
-
-    goal_groups = st.session_state.goal_groups
-
-    if goal_groups and collections:
-        with st.expander("Collection ID Mapping", expanded=True):
-            st.caption(
-                f"State: **{state}** — {len(collections)} collection(s) available. "
-                "Match each Goal Group to its Salesforce Collection ID."
-            )
-            options = ["(none)"] + list(collections.keys())
-            manual_mapping = {}
-
-            st.markdown(
-                """
-                <style>
-                [data-testid="stVerticalBlockBorderWrapper"] .collection-scroll {
-                    max-height: 400px;
-                    overflow-y: auto;
-                    padding-right: 8px;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
-            with st.container(height=400):
-                for group in goal_groups:
-                    best = auto_match(group, state, collections)
-                    default_idx = options.index(best) if best and best in options else 0
-                    selected = st.selectbox(
-                        group,
-                        options,
-                        index=default_idx,
-                        key=f"cmap_{group}",
-                    )
-                    if selected != "(none)":
-                        manual_mapping[group.lower()] = collections[selected]
-
-            st.session_state.manual_mapping = manual_mapping
-
-    elif goal_groups and not collections:
-        st.info(
-            f"State: **{state}** — no collections found in the collection report. "
-            "`salesforce_collection_ids` will be blank."
-        )
-
-# ---------------------------------------------------------------------------
-# Generate button
-# ---------------------------------------------------------------------------
-generate_clicked = st.button(
-    "Generate CSV",
-    type="primary",
-    disabled=(goal_builder_file is None),
-    use_container_width=True,
-)
-
-# ---------------------------------------------------------------------------
-# Processing
-# ---------------------------------------------------------------------------
-if generate_clicked and goal_builder_file is not None:
-    with st.spinner("Processing Tracking Table…"):
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                gb_path = os.path.join(tmpdir, goal_builder_file.name)
-                with open(gb_path, "wb") as f:
-                    f.write(goal_builder_file.getvalue())
-
-                output_path  = os.path.join(tmpdir, "lpm_upload.csv")
-                skipped_path = os.path.join(tmpdir, "lpm_skipped.csv")
-
-                # Apply the manual mapping from the dropdowns
-                state = gen.derive_state_from_filename(gb_path)
-                gen.COLLECTION_LOOKUP = st.session_state.get("manual_mapping", {})
-                gen.CURRENT_STATE = state
-
-                records, skipped, header_row = gen.load_tracking_table(gb_path)
-                if not records:
-                    raise ValueError("No valid records found in the Tracking Table after filtering.")
-
-                order, groups = gen.group_records(records)
-                total_trackers, total_ptgs = gen.generate_output(order, groups, output_path)
-
-                if skipped:
-                    gen.write_skipped_csv(skipped_path, skipped, header_row)
-
-                with open(output_path, "rb") as f:
-                    output_bytes = f.read()
-
-                skipped_bytes = None
-                if skipped and os.path.exists(skipped_path):
-                    with open(skipped_path, "rb") as f:
-                        skipped_bytes = f.read()
-
-                collection_info = [
-                    f"{group}  →  {cid}"
-                    for group, cid in sorted(gen.COLLECTION_LOOKUP.items())
-                ]
-
-            st.session_state.result = {
-                "error":           None,
-                "state":           state,
-                "total_trackers":  total_trackers,
-                "total_ptgs":      total_ptgs,
-                "skipped":         skipped,
-                "output_bytes":    output_bytes,
-                "skipped_bytes":   skipped_bytes,
-                "base_name":       os.path.splitext(goal_builder_file.name)[0],
-                "collection_info": collection_info,
-            }
-
-        except Exception as exc:
-            st.session_state.result = {"error": str(exc)}
-
-# ---------------------------------------------------------------------------
-# Results
-# ---------------------------------------------------------------------------
-result = st.session_state.get("result")
-
-if result:
-    st.markdown("---")
-
-    if result.get("error"):
-        st.error(f"**Error:** {result['error']}")
-
-    else:
-        if result["collection_info"]:
-            with st.expander(
-                f"State: **{result['state']}** — {len(result['collection_info'])} collection ID(s) applied",
-                expanded=False,
-            ):
-                for line in result["collection_info"]:
-                    st.text(line)
-        else:
-            st.info("`salesforce_collection_ids` will be blank — no collections were mapped.")
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Trackers", result["total_trackers"])
-        c2.metric("PTGs", result["total_ptgs"])
-        c3.metric("Skipped rows", len(result["skipped"]))
-
-        if result["skipped"]:
-            st.warning(f"⚠️ {len(result['skipped'])} row(s) were skipped — review before uploading.")
-            with st.expander("View skipped rows"):
-                for entry in result["skipped"]:
-                    goal_group = (entry["raw_row"][0] or "") if entry["raw_row"] else ""
-                    st.markdown(
-                        f"**Row {entry['row_num']}** &nbsp;·&nbsp; "
-                        f"`{goal_group}` &nbsp;·&nbsp; {entry['reason']}"
-                    )
-        else:
-            st.success("✅ All rows processed — no skipped rows.")
-
-        st.markdown("")
-
-        base = result["base_name"]
-        st.download_button(
-            label="⬇️  Download LPM Upload CSV",
-            data=result["output_bytes"],
-            file_name=f"{base}_lpm_upload.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-        if result["skipped_bytes"]:
-            st.download_button(
-                label="⬇️  Download Skipped Rows CSV",
-                data=result["skipped_bytes"],
-                file_name=f"{base}_skipped.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+with tab_recap:
+    render_recap_tab()
