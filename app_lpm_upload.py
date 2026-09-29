@@ -217,6 +217,7 @@ def auto_match(group_name, state, collections):
 
 def render_spp_tab():
     st.subheader("SPP LPM Upload Generator")
+    st.info("📌 Designed for use with the **Standardized SPP template**.")
     st.caption(
         "Upload a Goal Builder `.xlsm` file, confirm the Collection ID mapping, "
         "and generate the LPM upload CSV. State is read from the sheet's Goal "
