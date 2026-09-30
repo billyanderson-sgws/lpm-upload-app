@@ -161,15 +161,6 @@ def to_yyyymm(value):
     return s
 
 
-def next_future_month_yyyymm():
-    """Return the first month that is strictly in the future from today (YYYYMM)."""
-    today = date.today()
-    # Next month after today
-    if today.month == 12:
-        return f"{today.year + 1}01"
-    return f"{today.year}{today.month + 1:02d}"
-
-
 def _yyyymm_subtract_months(yyyymm, months):
     """Return YYYYMM shifted back by the given number of whole months."""
     year  = int(yyyymm[:4])
@@ -674,7 +665,7 @@ def load_tracking_table(wb_path):
 
         # Dates
         start_yyyymm       = to_yyyymm(start_raw)
-        end_yyyymm         = next_future_month_yyyymm()
+        end_yyyymm         = to_yyyymm(end_raw)
         basis_start_yyyymm = to_yyyymm(basis_start_raw)
         basis_end_yyyymm   = to_yyyymm(basis_end_raw)
 
