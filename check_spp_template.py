@@ -313,13 +313,33 @@ def check_tracking_table(wb_path):
         # per Rep is filled in and Market Segment Goal is a clean whole-number
         # multiple of it, that's a strong sign someone multiplied the real
         # per-rep goal by headcount instead of entering it directly.
+        #
+        # Guard rails against noise:
+        #   - Min Goal per Rep == 1 is excluded: the generator falls back to
+        #     "1" whenever that column is left blank (see min_objective_target
+        #     in build_ptg_row), so a value of 1 is usually just an unfilled
+        #     placeholder, not someone's real per-rep target -- and against a
+        #     trivial divisor of 1, EVERY Market Segment Goal "looks like"
+        #     1 x itself reps, which fires on virtually every Fixed Goal row.
+        #   - The implied headcount is capped at a plausible team size, so a
+        #     coincidental clean division doesn't get read as a real rep count.
+        MAX_PLAUSIBLE_REPS = 50
         if goal_distribution == gen.FIXED_GOAL_DISTRIBUTION:
             mkt_val = _to_float(mkt_seg)
             min_val = _to_float(min_goal_per_rep_raw)
-            if mkt_val is not None and min_val and mkt_val != min_val:
+
+            if mkt_val is None and min_val:
+                # Market Segment Goal is blank -- the generator now falls back
+                # to Min Goal per Rep as the Fixed Goal itself in that case.
+                flags.append(make_flag(
+                    r, "info", "fixed_goal_from_min_per_rep",
+                    f"Market Segment Goal is blank on this 'Fixed Goal per Salesperson' row, so "
+                    f"Min Goal per Rep ({min_val:g}) will be used as the Fixed Goal instead."
+                ))
+            elif mkt_val is not None and min_val and min_val > 1 and mkt_val != min_val:
                 ratio = mkt_val / min_val
                 nearest = round(ratio)
-                if nearest > 1 and abs(ratio - nearest) < 1e-6:
+                if 1 < nearest <= MAX_PLAUSIBLE_REPS and abs(ratio - nearest) < 1e-6:
                     flags.append(make_flag(
                         r, "warning", "fixed_goal_looks_summed",
                         f"Goal Distribution is 'Fixed Goal per Salesperson' with Market Segment "
@@ -328,6 +348,19 @@ def check_tracking_table(wb_path):
                         f"{min_val:g} x {nearest} reps summed together. This should probably be a "
                         f"Fixed Goal of {min_val:g}, not {mkt_val:g} (or switch Goal Distribution to "
                         f"'Even Goal' if {mkt_val:g} really is meant to be split across reps)."
+                    ))
+                else:
+                    # Not a clean multiple, but Fixed goals don't need Min Goal
+                    # per Rep at all -- the Fixed Goal itself IS each rep's
+                    # minimum. A meaningfully-filled value here (not the "1"
+                    # placeholder) is still worth a quieter heads-up even when
+                    # it doesn't cleanly divide into Market Segment Goal.
+                    flags.append(make_flag(
+                        r, "info", "fixed_goal_has_min_per_rep",
+                        f"Goal Distribution is 'Fixed Goal per Salesperson', which doesn't use Min "
+                        f"Goal per Rep (the Fixed Goal of {mkt_val:g} is already each rep's minimum) "
+                        f"— but Min Goal per Rep is filled in as {min_val:g}. Worth confirming this "
+                        f"wasn't meant to be the actual Fixed Goal."
                     ))
 
         # --- Silent skips (surfaced, not blocked) -----------------------------

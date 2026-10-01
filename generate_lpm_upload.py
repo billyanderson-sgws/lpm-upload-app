@@ -851,6 +851,10 @@ def build_ptg_row(rec):
     is_volume = rec["goal_type"] in VOLUME_TYPES
     is_fixed_or_even = rec["goal_distribution"] in NO_MIN_FALLBACK_DISTRIBUTIONS
     distribution_target = rec["mkt_seg_goal"]
+    if rec["goal_distribution"] == FIXED_GOAL_DISTRIBUTION and not distribution_target:
+        # A Fixed goal with no Market Segment Goal entered has no goal at all
+        # otherwise -- Min Goal per Rep IS each rep's fixed target in that case.
+        distribution_target = rec["min_goal_per_rep"]
     min_objective_target = "" if is_fixed_or_even else (rec["min_goal_per_rep"] or "1")
     return {
         "goal_category":                  "PTG",
