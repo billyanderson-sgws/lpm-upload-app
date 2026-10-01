@@ -594,7 +594,9 @@ def load_tracking_table(wb_path):
         if isinstance(mkt_seg, str) and mkt_seg.strip().upper() == "FLAT":
             mkt_seg = 0
         elif isinstance(mkt_seg, float) and -1 < mkt_seg < 1 and mkt_seg != 0:
-            mkt_seg = round(mkt_seg * 100, 4)
+            mkt_seg = round(mkt_seg * 100, 2)
+        elif isinstance(mkt_seg, (int, float)):
+            mkt_seg = round(mkt_seg, 2)
         ptg_name_v  = cv(12)
         level_detail = safe_str(cv(13))
         supplier    = cv(14)

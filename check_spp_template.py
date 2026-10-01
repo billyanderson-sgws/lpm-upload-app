@@ -1,0 +1,372 @@
+"""
+check_spp_template.py
+
+Pre-flight checker for SPP Goal Builder .xlsm files. Scans the "Tracking Table"
+sheet for data-entry problems that generate_lpm_upload.py either silently
+coerces, silently skips, or doesn't catch at all, and reports them as flags —
+this never blocks CSV generation, it just surfaces things worth a second look
+before the state's submission goes through.
+
+Usage:
+    python check_spp_template.py <goal_builder.xlsm>
+"""
+
+import sys
+
+try:
+    import openpyxl
+except ImportError:
+    print("ERROR: openpyxl is required.  Install with: pip install openpyxl", file=sys.stderr)
+    sys.exit(1)
+
+import generate_lpm_upload as gen
+
+# Canonical Tracking Table header (columns 1-27), whitespace-normalized.
+# A file whose headers don't match this (missing/renamed/reordered columns)
+# means the template itself has been altered.
+EXPECTED_HEADERS = [
+    "Goal Group",
+    "SPP Tier",
+    "Goal Bucket:",
+    "Objective Type",
+    "Program Posting Start",
+    "Program Posting End",
+    "Basis Period Start",
+    "Basis Period End",
+    "Unsold Prd",
+    "Measure",
+    "Market Segment Goal",
+    "PTG Name (Brand/Product Info ONLY):",
+    "Level of Detail",
+    "Supplier",
+    "Selection (select all that apply)",
+    "Customer Exclusions",
+    "Basis Item (if different than selection)",
+    "Applicable Premise",
+    "Size(s)",
+    "Goal Distribution",
+    "Qualifier",
+    "Min Goal per Rep",
+    "Min Cases",
+    "Min Facings / Mentions",
+    "POD Attribute",
+    "Notes/Exclusions",
+    "Category",
+]
+
+
+def _norm_header(v):
+    """Collapse whitespace/newlines so '<br>'-wrapped headers still compare cleanly."""
+    if v is None:
+        return ""
+    return " ".join(str(v).split())
+
+
+def _is_self_concat(s):
+    """True if s is exactly two back-to-back copies of the same non-empty text,
+    e.g. 'Volume (Cases)Volume (Cases)' -- a drag-fill/paste artifact."""
+    if not isinstance(s, str):
+        return False
+    s = s.strip()
+    if len(s) < 2 or len(s) % 2 != 0:
+        return False
+    half = len(s) // 2
+    first, second = s[:half], s[half:]
+    return bool(first) and first == second
+
+
+def make_flag(row_num, severity, category, message):
+    return {"row_num": row_num, "severity": severity, "category": category, "message": message}
+
+
+# Level of Detail values that are backed by the VSTACK master list (dependent
+# dropdown source). "Total" has no VSTACK entry and needs no cross-check.
+LEVELS_IN_VSTACK = {"Supplier", "Group", "SubGroup", "Super Group", "Items(s)", "Brand"}
+
+
+def _build_vstack_index(wb):
+    """
+    VSTACK columns: A=Category (level), B=parent Supplier (blank for the flat
+    Supplier level itself), C=Concat, D=Specific (display name).
+    Returns (valid, reverse_same_supplier, reverse_any_supplier):
+      valid: set of (category, supplier_key, specific_key)
+      reverse_same_supplier: (supplier_key, specific_key) -> set of categories
+      reverse_any_supplier: specific_key -> set of (category, supplier_key)
+    """
+    valid = set()
+    reverse_same_supplier = {}
+    reverse_any_supplier = {}
+    if "VSTACK" not in wb.sheetnames:
+        return valid, reverse_same_supplier, reverse_any_supplier
+
+    ws = wb["VSTACK"]
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        cat, supplier, _concat, specific = row[0], row[1], row[2], row[3]
+        if cat is None or specific is None:
+            continue
+        supplier_key = (supplier or "").strip().upper()
+        specific_key = str(specific).strip().upper()
+        valid.add((cat, supplier_key, specific_key))
+        reverse_same_supplier.setdefault((supplier_key, specific_key), set()).add(cat)
+        reverse_any_supplier.setdefault(specific_key, set()).add((cat, supplier_key))
+    return valid, reverse_same_supplier, reverse_any_supplier
+
+
+def check_tracking_table(wb_path):
+    """
+    Return (flags, header_issues, row_count).
+    flags: list of dicts (row_num=None for file-level flags).
+    header_issues: list of strings describing header/column problems.
+    """
+    flags = []
+    header_issues = []
+
+    wb_formula = openpyxl.load_workbook(wb_path, keep_vba=True, data_only=False)
+    wb = openpyxl.load_workbook(wb_path, keep_vba=True, data_only=True)
+
+    if "Tracking Table" not in wb.sheetnames:
+        header_issues.append("No 'Tracking Table' sheet found in this file.")
+        return flags, header_issues, 0
+
+    ws_formula = wb_formula["Tracking Table"]
+    ws = wb["Tracking Table"]
+    vstack_valid, vstack_same_supplier, vstack_any_supplier = _build_vstack_index(wb)
+
+    # --- Header / missing-column check -------------------------------------
+    actual_headers = [_norm_header(ws.cell(1, c).value) for c in range(1, len(EXPECTED_HEADERS) + 1)]
+    if ws.max_column < len(EXPECTED_HEADERS):
+        header_issues.append(
+            f"Tracking Table has only {ws.max_column} column(s); expected {len(EXPECTED_HEADERS)}. "
+            "Columns are likely missing from the template."
+        )
+    for i, expected in enumerate(EXPECTED_HEADERS):
+        actual = actual_headers[i] if i < len(actual_headers) else ""
+        if actual != expected:
+            col_letter = openpyxl.utils.get_column_letter(i + 1)
+            header_issues.append(
+                f"Column {col_letter}: expected header \"{expected}\", found \"{actual or '(blank)'}\"."
+            )
+
+    def cv(r, c):
+        if c in (5, 6, 7, 8):
+            return ws.cell(r, c).value
+        v = ws_formula.cell(r, c).value
+        if isinstance(v, str) and v.startswith("="):
+            return ws.cell(r, c).value
+        return v
+
+    end_dates_seen = {}  # yyyymm -> list of row_num
+    tier_counts = {}     # goal_group -> {"Anchor": n, "Flex": n}
+    row_count = 0
+
+    for r in range(2, ws.max_row + 1):
+        goal_group  = gen.safe_str(cv(r, 1))
+        spp_tier    = gen.safe_str(cv(r, 2))
+        goal_bucket = gen.safe_str(cv(r, 3))
+        obj_type    = gen.safe_str(cv(r, 4)).rstrip(" -")
+        start_raw   = cv(r, 5)
+        end_raw     = cv(r, 6)
+        mkt_seg     = cv(r, 11)
+        ptg_name_v  = cv(r, 12)
+        level_detail = gen.safe_str(cv(r, 13))
+        supplier    = cv(r, 14)
+        selection   = cv(r, 15)
+        measure     = gen.safe_str(cv(r, 10))
+
+        if not goal_group and ptg_name_v is None and selection is None:
+            continue  # genuinely blank row — not a problem
+
+        row_count += 1
+
+        # --- Anchor/Flex tally (2:1 ratio check, below) ----------------------
+        if spp_tier in ("Anchor", "Flex"):
+            counts = tier_counts.setdefault(goal_group or "(no Goal Group)", {"Anchor": 0, "Flex": 0})
+            counts[spp_tier] += 1
+
+        # --- Blank end date -------------------------------------------------
+        start_yyyymm = gen.to_yyyymm(start_raw)
+        end_yyyymm   = gen.to_yyyymm(end_raw)
+        if start_yyyymm and not end_yyyymm:
+            flags.append(make_flag(
+                r, "warning", "end_date",
+                f"Program Posting Start is set ({start_raw}) but Program Posting End is blank."
+            ))
+        elif end_yyyymm:
+            end_dates_seen.setdefault(end_yyyymm, []).append(r)
+
+        # --- Duplicated/concatenated text ------------------------------------
+        for c in range(1, len(EXPECTED_HEADERS) + 1):
+            val = cv(r, c)
+            if _is_self_concat(val):
+                header = EXPECTED_HEADERS[c - 1]
+                flags.append(make_flag(
+                    r, "warning", "duplicated_text",
+                    f"\"{header}\" looks duplicated/concatenated: {val!r}"
+                ))
+
+        # --- Supplier column filled in when it should be blank ---------------
+        # When Level of Detail = "Supplier", the Supplier column is grayed out
+        # in the template -- the actual target belongs in Selection instead.
+        # Users sometimes type into it anyway, which is how PTG Name ends up
+        # pulling a stale/unrelated value (ptg_name_from_row prefers PTG Name,
+        # then Selection, then Supplier).
+        if level_detail == "Supplier":
+            supplier_s = gen.safe_str(supplier)
+            chosen = gen.safe_str(ptg_name_v) or gen.safe_str(selection)
+            if supplier_s:
+                flags.append(make_flag(
+                    r, "warning", "selection_mismatch",
+                    f"Level of Detail is 'Supplier', so the Supplier column should be blank "
+                    f"(the target belongs in Selection) — but Supplier is filled in "
+                    f"({supplier_s!r}), while PTG Name/Selection says {chosen!r}."
+                ))
+
+        # --- Selection not valid for the stated Level of Detail ---------------
+        # Cross-reference against VSTACK, the dependent-dropdown master list.
+        # Catches: (a) Level of Detail flipped (e.g. Group -> SubGroup) without
+        # re-picking Selection, and (b) orphaned/typo'd Selection values that
+        # don't exist under any level/supplier at all.
+        # NOTE: PTG Name is a freeform display label (users legitimately type
+        # custom text there, e.g. "SUPPLIER-INDY ONLY" to split one supplier
+        # into two PTGs) -- it is NOT a controlled dropdown value, so only
+        # Selection is validated here, never PTG Name. The header itself says
+        # "select all that apply", so Selection may be a comma-separated list
+        # of items -- but some entity names (e.g. "SUTTER HOME WINERY, INC")
+        # legitimately contain a comma, so the whole string is checked first;
+        # splitting is only trusted if every resulting piece independently
+        # validates. Otherwise, report on the original whole value.
+        if level_detail in LEVELS_IN_VSTACK and vstack_valid:
+            chosen = gen.safe_str(selection)
+            if chosen:
+                supplier_key = "" if level_detail == "Supplier" else gen.safe_str(supplier).upper()
+
+                def _is_valid(text):
+                    return (level_detail, supplier_key, text.upper()) in vstack_valid
+
+                if not _is_valid(chosen):
+                    parts = [p.strip() for p in chosen.split(",") if p.strip()]
+                    # Trust the comma-split only if every piece independently
+                    # validates (a genuine multi-select list); otherwise treat
+                    # the original string as a single item (e.g. a name that
+                    # just happens to contain a comma).
+                    if len(parts) > 1 and all(_is_valid(p) for p in parts):
+                        to_check = []
+                    else:
+                        to_check = [chosen]
+
+                    for item in to_check:
+                        item_key = item.upper()
+                        same_supplier = vstack_same_supplier.get((supplier_key, item_key))
+                        anywhere = vstack_any_supplier.get(item_key)
+                        if same_supplier or anywhere:
+                            actually = same_supplier or anywhere
+                            flags.append(make_flag(
+                                r, "warning", "selection_not_valid_for_level",
+                                f"Selection {item!r} isn't valid as '{level_detail}' "
+                                f"(Supplier {supplier_key or '(none)'!r}) — it actually exists under "
+                                f"{sorted(actually)}. Likely a Level of Detail or Supplier change that "
+                                f"wasn't followed by re-picking Selection."
+                            ))
+                        else:
+                            flags.append(make_flag(
+                                r, "warning", "selection_not_found",
+                                f"Selection {item!r} doesn't exist in the master list under "
+                                "any Level of Detail or Supplier — possibly freeform text, a typo, or a "
+                                "discontinued item."
+                            ))
+
+        # --- Non-numeric Market Segment Goal ---------------------------------
+        if isinstance(mkt_seg, str):
+            s = mkt_seg.strip()
+            if s and s.upper() != "FLAT":
+                numeric = gen._numeric_str(s)
+                if numeric != s:
+                    flags.append(make_flag(
+                        r, "warning", "non_numeric_goal",
+                        f"Market Segment Goal {s!r} has non-numeric text; "
+                        f"only {numeric!r} will be used."
+                    ))
+
+        # --- Silent skips (surfaced, not blocked) -----------------------------
+        if goal_bucket == "Select:" and not obj_type:
+            flags.append(make_flag(
+                r, "info", "silent_skip",
+                "Goal Bucket is still 'Select:' with no Objective Type chosen — "
+                "this row will be dropped with no record in the skipped-rows CSV."
+            ))
+        elif measure in gen.SKIP_MEASURES:
+            flags.append(make_flag(
+                r, "info", "silent_skip",
+                f"Measure '{measure}' is intentionally excluded (Digital) — "
+                "this row will be dropped with no record in the skipped-rows CSV."
+            ))
+        elif obj_type and not goal_bucket == "Select:" and obj_type not in gen.SKIP_OBJECTIVE_TYPES:
+            if not gen.OBJECTIVE_TYPE_MAP.get(obj_type):
+                flags.append(make_flag(
+                    r, "warning", "unknown_objective_type",
+                    f"Objective Type '{obj_type}' isn't recognized — this row will be skipped."
+                ))
+        elif not obj_type and goal_bucket != "Select:":
+            flags.append(make_flag(
+                r, "warning", "blank_objective_type",
+                "Objective Type is blank — this row will be skipped as unrecognized."
+            ))
+
+    # --- Anchor/Flex 2:1 ratio, per Goal Group (tracker) --------------------
+    for goal_group, counts in tier_counts.items():
+        anchor_n, flex_n = counts["Anchor"], counts["Flex"]
+        total = anchor_n + flex_n
+        if total == 0:
+            continue
+        expected_anchor = round(total * 2 / 3)
+        expected_flex = total - expected_anchor
+        if (anchor_n, flex_n) != (expected_anchor, expected_flex):
+            flags.append(make_flag(
+                None, "warning", "anchor_flex_ratio",
+                f"'{goal_group}': {total} goal(s) should split 2:1 Anchor/Flex "
+                f"({expected_anchor} Anchor / {expected_flex} Flex), but found "
+                f"{anchor_n} Anchor / {flex_n} Flex."
+            ))
+
+    # --- File-level: inconsistent end dates ---------------------------------
+    if len(end_dates_seen) > 1:
+        breakdown = ", ".join(
+            f"{ym} (row(s) {rows})" for ym, rows in sorted(end_dates_seen.items())
+        )
+        flags.append(make_flag(
+            None, "warning", "end_date_inconsistent",
+            f"Multiple different Program Posting End months found across the file: {breakdown}. "
+            "Confirm this is intentional (multiple distinct programs) and not a stale/missed update."
+        ))
+
+    wb_formula.close()
+    wb.close()
+    return flags, header_issues, row_count
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python check_spp_template.py <goal_builder.xlsm>", file=sys.stderr)
+        sys.exit(1)
+
+    flags, header_issues, row_count = check_tracking_table(sys.argv[1])
+
+    print(f"Checked {row_count} row(s).\n")
+
+    if header_issues:
+        print("HEADER ISSUES:")
+        for issue in header_issues:
+            print(f"  - {issue}")
+        print()
+
+    if not flags:
+        print("No issues found.")
+        return
+
+    for f in flags:
+        where = f"Row {f['row_num']}" if f["row_num"] else "File-level"
+        print(f"[{f['severity'].upper()}] {where} ({f['category']}): {f['message']}")
+
+
+if __name__ == "__main__":
+    main()

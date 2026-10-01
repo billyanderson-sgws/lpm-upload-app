@@ -18,18 +18,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate_lpm_upload as gen
 import generate_sod_upload as sodgen
 import ny_sod_revision_recap as recap
+import check_spp_template as checker
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="LPM Upload Generator",
-    page_icon="📊",
-    layout="centered",
-)
-
 _APP_DIR = Path(__file__).resolve().parent
 BUNDLED_COLLECTION = str(_APP_DIR / "LPM Salesforce and Overlay Collection Report.xlsx")
+CI_LOGO = _APP_DIR / "assets" / "ci_logo.png"
+
+st.set_page_config(
+    page_title="LPM Upload Generator",
+    page_icon=str(CI_LOGO) if CI_LOGO.is_file() else "📊",
+    layout="wide",
+)
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -380,7 +382,7 @@ def render_spp_tab():
     result = st.session_state.get("spp_result")
 
     if result:
-        st.markdown("---")
+        st.divider()
 
         if result.get("error"):
             st.error(f"**Error:** {result['error']}")
@@ -423,7 +425,7 @@ def render_spp_tab():
                             f"Tracker `{d['tracker']}` · PTG `{d['ptg_name']}` · source rows: {d['row_nums']}"
                         )
 
-            st.markdown("")
+            st.divider()
 
             base = result["base_name"]
             st.download_button(
@@ -524,7 +526,7 @@ def render_sod_tab():
     result = st.session_state.get("sod_result")
 
     if result:
-        st.markdown("---")
+        st.divider()
 
         if result.get("error"):
             st.error(f"**Error:** {result['error']}")
@@ -555,7 +557,7 @@ def render_sod_tab():
                             f"Tracker `{d['tracker']}` · Goal Name `{d['ptg_name']}` · source rows: {d['row_nums']}"
                         )
 
-            st.markdown("")
+            st.divider()
 
             base = result["base_name"]
             st.download_button(
@@ -638,7 +640,7 @@ def render_recap_tab():
     result = st.session_state.get("recap_result")
 
     if result:
-        st.markdown("---")
+        st.divider()
 
         if result.get("error"):
             st.error(f"**Error:** {result['error']}")
@@ -658,7 +660,7 @@ def render_recap_tab():
             else:
                 st.success("✅ No differences found.")
 
-            st.markdown("")
+            st.divider()
 
             base = result["base_name"]
             st.download_button(
@@ -672,19 +674,105 @@ def render_recap_tab():
 
 
 # ---------------------------------------------------------------------------
+# Tab 4: SPP Template Checker
+# ---------------------------------------------------------------------------
+
+_SEVERITY_ICON = {"warning": "⚠️", "info": "ℹ️"}
+
+
+def render_checker_tab():
+    st.subheader("SPP Template Checker")
+    st.caption(
+        "Upload a Goal Builder `.xlsm` and scan its Tracking Table for data-entry "
+        "problems — missing/blank end dates, duplicated or concatenated text, "
+        "Supplier/Selection mismatches, non-numeric goals, header/column changes, "
+        "silent skips, and Anchor/Flex ratio imbalance. This never generates a CSV "
+        "and never blocks anything downstream — it's a heads-up before you run the "
+        "actual generator."
+    )
+
+    check_file = st.file_uploader(
+        "Goal Builder (.xlsm)",
+        type=["xlsm"],
+        key="checker_goal_builder_file",
+    )
+
+    check_clicked = st.button(
+        "Check Template",
+        type="primary",
+        disabled=(check_file is None),
+        use_container_width=True,
+        key="checker_run_button",
+    )
+
+    if check_clicked and check_file is not None:
+        with st.spinner("Scanning Tracking Table…"):
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    gb_path = os.path.join(tmpdir, check_file.name)
+                    with open(gb_path, "wb") as f:
+                        f.write(check_file.getvalue())
+                    flags, header_issues, row_count = checker.check_tracking_table(gb_path)
+
+                st.session_state.checker_result = {
+                    "error": None,
+                    "flags": flags,
+                    "header_issues": header_issues,
+                    "row_count": row_count,
+                }
+            except Exception as exc:
+                st.session_state.checker_result = {"error": str(exc)}
+
+    result = st.session_state.get("checker_result")
+
+    if result:
+        st.divider()
+
+        if result.get("error"):
+            st.error(f"**Error:** {result['error']}")
+        else:
+            st.caption(f"Checked {result['row_count']} row(s).")
+
+            if result["header_issues"]:
+                st.error(f"🛑 {len(result['header_issues'])} header/column issue(s) — the template structure itself has changed.")
+                with st.expander("View header issues", expanded=True):
+                    for issue in result["header_issues"]:
+                        st.markdown(f"- {issue}")
+
+            flags = result["flags"]
+            warnings = [f for f in flags if f["severity"] == "warning"]
+            infos = [f for f in flags if f["severity"] == "info"]
+
+            c1, c2 = st.columns(2)
+            c1.metric("Warnings", len(warnings))
+            c2.metric("Informational", len(infos))
+
+            if not flags and not result["header_issues"]:
+                st.success("✅ No issues found.")
+            else:
+                for f in warnings + infos:
+                    where = f"Row {f['row_num']}" if f["row_num"] else "File-level"
+                    icon = _SEVERITY_ICON.get(f["severity"], "")
+                    st.markdown(f"{icon} **{where}** · `{f['category']}` — {f['message']}")
+
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
+    if CI_LOGO.is_file():
+        st.image(str(CI_LOGO), use_container_width=True)
     st.header("LPM Upload Generator")
     st.markdown("""
-Three tools, one app:
+Four tools, one app:
 - **SPP Generator** — SPP Goal Builder `.xlsm` → LPM upload CSV
 - **NY SOD Generator** — NY Monthly Quota Planner `.xlsb` → LPM upload CSV
 - **NY SOD Revision Recap** — diff an INPUT vs FINAL NY SOD file
+- **SPP Template Checker** — scan a Goal Builder for data-entry problems before generating
 
 The **LPM Collection Report** is bundled automatically for both generators.
 """)
-    st.markdown("---")
+    st.divider()
     st.caption("LPM Upload Generator · Southern Glazer's")
 
 # ---------------------------------------------------------------------------
@@ -692,13 +780,18 @@ The **LPM Collection Report** is bundled automatically for both generators.
 # ---------------------------------------------------------------------------
 st.title("LPM Upload Generator")
 
-tab_spp, tab_sod, tab_recap = st.tabs(["SPP Generator", "NY SOD Generator", "NY SOD Revision Recap"])
+tab_spp, tab_sod, tab_recap, tab_checker = st.tabs(
+    ["SPP Generator", "NY SOD Generator", "NY SOD Revision Recap", "SPP Template Checker"]
+)
 
 with tab_spp:
     render_spp_tab()
 
 with tab_sod:
     render_sod_tab()
+
+with tab_checker:
+    render_checker_tab()
 
 with tab_recap:
     render_recap_tab()
