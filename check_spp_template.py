@@ -75,6 +75,22 @@ def _is_self_concat(s):
     return bool(first) and first == second
 
 
+def _to_float(value):
+    """Best-effort numeric coercion, reusing gen._numeric_str for strings
+    with trailing non-numeric text (e.g. '12 pods')."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = gen._numeric_str(value)
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def make_flag(row_num, severity, category, message):
     return {"row_num": row_num, "severity": severity, "category": category, "message": message}
 
@@ -172,6 +188,8 @@ def check_tracking_table(wb_path):
         supplier    = cv(r, 14)
         selection   = cv(r, 15)
         measure     = gen.safe_str(cv(r, 10))
+        goal_distribution   = gen.safe_str(cv(r, 20))
+        min_goal_per_rep_raw = cv(r, 22)
 
         if not goal_group and ptg_name_v is None and selection is None:
             continue  # genuinely blank row — not a problem
@@ -285,6 +303,30 @@ def check_tracking_table(wb_path):
                         r, "warning", "non_numeric_goal",
                         f"Market Segment Goal {s!r} has non-numeric text; "
                         f"only {numeric!r} will be used."
+                    ))
+
+        # --- Fixed goal looks like a summed team total, not a per-rep target --
+        # For "Fixed Goal per Salesperson", Market Segment Goal IS each rep's
+        # own target -- the generator ignores Min Goal per Rep entirely for
+        # Fixed/Even distributions (it's not output at all). So if Min Goal
+        # per Rep is filled in and Market Segment Goal is a clean whole-number
+        # multiple of it, that's a strong sign someone multiplied the real
+        # per-rep goal by headcount instead of entering it directly.
+        if goal_distribution == gen.FIXED_GOAL_DISTRIBUTION:
+            mkt_val = _to_float(mkt_seg)
+            min_val = _to_float(min_goal_per_rep_raw)
+            if mkt_val is not None and min_val and mkt_val != min_val:
+                ratio = mkt_val / min_val
+                nearest = round(ratio)
+                if nearest > 1 and abs(ratio - nearest) < 1e-6:
+                    flags.append(make_flag(
+                        r, "warning", "fixed_goal_looks_summed",
+                        f"Goal Distribution is 'Fixed Goal per Salesperson' with Market Segment "
+                        f"Goal = {mkt_val:g}, but Min Goal per Rep = {min_val:g}. A Fixed goal is "
+                        f"each rep's own target, not a team total — {mkt_val:g} looks like "
+                        f"{min_val:g} x {nearest} reps summed together. This should probably be a "
+                        f"Fixed Goal of {min_val:g}, not {mkt_val:g} (or switch Goal Distribution to "
+                        f"'Even Goal' if {mkt_val:g} really is meant to be split across reps)."
                     ))
 
         # --- Silent skips (surfaced, not blocked) -----------------------------
