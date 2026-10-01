@@ -11,6 +11,7 @@ Usage:
     python check_spp_template.py <goal_builder.xlsm>
 """
 
+import csv
 import sys
 
 try:
@@ -384,6 +385,23 @@ def check_tracking_table(wb_path):
     wb_formula.close()
     wb.close()
     return flags, header_issues, row_count
+
+
+def write_report_csv(csv_path, flags, header_issues, source_filename=""):
+    """
+    Write the full checker report (header issues + all flags) to a CSV,
+    sorted so file-level items and the sorted-by-row flags are both easy
+    to scan. Suitable for emailing to a state or filing alongside the
+    submission for a paper trail.
+    """
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+        writer.writerow(["source_file", "row", "severity", "category", "message"])
+        for issue in header_issues:
+            writer.writerow([source_filename, "", "error", "header", issue])
+        for flag in sorted(flags, key=lambda fl: (fl["row_num"] is None, fl["row_num"] or 0)):
+            row_label = flag["row_num"] if flag["row_num"] else "File-level"
+            writer.writerow([source_filename, row_label, flag["severity"], flag["category"], flag["message"]])
 
 
 def main():

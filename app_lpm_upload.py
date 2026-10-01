@@ -691,9 +691,9 @@ def render_checker_tab():
         "Upload a Goal Builder `.xlsm` and scan its Tracking Table for data-entry "
         "problems — missing/blank end dates, duplicated or concatenated text, "
         "Supplier/Selection mismatches, non-numeric goals, header/column changes, "
-        "silent skips, and Anchor/Flex ratio imbalance. This never generates a CSV "
-        "and never blocks anything downstream — it's a heads-up before you run the "
-        "actual generator."
+        "silent skips, and Anchor/Flex ratio imbalance. Results can be exported as a "
+        "CSV report. This never generates an LPM upload CSV and never blocks anything "
+        "downstream — it's a heads-up before you run the actual generator."
     )
 
     check_file = st.file_uploader(
@@ -719,11 +719,18 @@ def render_checker_tab():
                         f.write(check_file.getvalue())
                     flags, header_issues, row_count = checker.check_tracking_table(gb_path)
 
+                    report_path = os.path.join(tmpdir, "report.csv")
+                    checker.write_report_csv(report_path, flags, header_issues, check_file.name)
+                    with open(report_path, "rb") as f:
+                        report_bytes = f.read()
+
                 st.session_state.checker_result = {
                     "error": None,
                     "flags": flags,
                     "header_issues": header_issues,
                     "row_count": row_count,
+                    "report_bytes": report_bytes,
+                    "base_name": os.path.splitext(check_file.name)[0],
                 }
             except Exception as exc:
                 st.session_state.checker_result = {"error": str(exc)}
@@ -751,6 +758,16 @@ def render_checker_tab():
             c1, c2 = st.columns(2)
             c1.metric("Warnings", len(warnings))
             c2.metric("Informational", len(infos))
+
+            if result.get("report_bytes"):
+                st.download_button(
+                    label="⬇️  Download Report CSV",
+                    data=result["report_bytes"],
+                    file_name=f"{result['base_name']}_template_check.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="checker_download_report",
+                )
 
             if not flags and not result["header_issues"]:
                 st.success("✅ No issues found.")
