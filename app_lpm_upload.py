@@ -276,6 +276,11 @@ def render_spp_tab():
                     f"State: **{state}** — {len(collections)} collection(s) available. "
                     "Match each Goal Group to its Salesforce Collection ID."
                 )
+                st.caption(
+                    "ℹ️ Collection IDs below are auto-matched by Goal Group name — "
+                    "verify each one before generating. A blank **(none)** means no "
+                    "match was found, not that no collection exists for that group."
+                )
                 options = ["(none)"] + list(collections.keys())
                 manual_mapping = {}
 
