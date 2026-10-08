@@ -196,6 +196,7 @@ def load_goal_sheet(xlsb_path):
         division  = spp.safe_str(gv("Division"))
         goal_type_raw = spp.safe_str(gv("Goal Type"))
         goal_criteria = spp.safe_str(gv("Goal Criteria"))
+        premise = spp.safe_str(gv("Premise - On or Off Only")).upper()
 
         raw_row = [gv(c) for c in GOAL_SHEET_COLUMNS]
 
@@ -261,6 +262,7 @@ def load_goal_sheet(xlsb_path):
             "goal_criteria":        goal_criteria,
             "goal_value":           goal_value,
             "pod_attribute":        pod_attribute,
+            "premise":              premise,
         })
 
     return records, skipped, anchor_year, anchor_month
@@ -273,11 +275,15 @@ def load_goal_sheet(xlsb_path):
 def group_key(rec):
     # Key on the actual resolved unsold window, not just presence — two rows
     # with the same goal_type/tracking period but different unsold periods
-    # (e.g. JUL-AUG vs AUG-AUG) must land in separate Trackers.
+    # (e.g. JUL-AUG vs AUG-AUG) must land in separate Trackers. Premise (On
+    # premise/Off premise) has no LPM CSV field of its own, but still gates
+    # grouping -- an On-only row and an Off-only row must not share a
+    # Tracker just because everything else matches.
     return (
         rec["division"], rec["goal_type"], rec["goal_uom"],
         rec["start_yyyymm"], rec["end_yyyymm"],
         rec["unsold_start_yyyymm"], rec["unsold_end_yyyymm"],
+        rec["premise"],
     )
 
 
@@ -293,7 +299,7 @@ def group_records(records):
 
 
 def build_tracker_row(key, recs):
-    division, goal_type, goal_uom, start, end, unsold_start, unsold_end = key
+    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, _premise = key
     return {
         "goal_category":                  "Tracker",
         "goal_name":                      division,

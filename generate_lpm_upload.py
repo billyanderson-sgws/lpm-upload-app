@@ -601,7 +601,8 @@ def load_tracking_table(wb_path):
         level_detail = safe_str(cv(13))
         supplier    = cv(14)
         selection       = cv(15)
-        # cols 16-19 not used
+        # cols 16-17, 19 not used
+        applicable_premise = safe_str(cv(18)).upper()
         goal_distribution = safe_str(cv(20))
         qualifier       = cv(21)  # Qualifier -> achievement_min (numeric only)
         min_goal_per_rep = cv(22) # Min Goal per Rep -> min_objective_target
@@ -699,6 +700,7 @@ def load_tracking_table(wb_path):
             "level_detail":       level_detail,
             "selection":          safe_str(selection),
             "category":           category,
+            "premise":            applicable_premise,
         })
 
     return records, skipped, header_row
@@ -721,6 +723,7 @@ def group_key(rec):
         rec["basis_start_yyyymm"],
         rec["basis_end_yyyymm"],
         unsold,
+        rec["premise"],
     )
     # NV only: on top of the normal grouping above, also split/merge by the
     # Category column's alpha family (Wine/Beer/Spirits, digits stripped) so
