@@ -17,6 +17,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate_lpm_upload as gen
 import generate_sod_upload as sodgen
+import generate_ca_quota_upload as cagen
 import ny_sod_revision_recap as recap
 import check_spp_template as checker
 
@@ -585,6 +586,227 @@ def render_sod_tab():
 
 
 # ---------------------------------------------------------------------------
+# Tab 2b: CA Union Quota Generator
+# ---------------------------------------------------------------------------
+
+def render_ca_quota_tab():
+    st.subheader("CA Union Quota LPM Upload Generator")
+    st.info("📌 Designed for use with the **California Quota Input Form** template.")
+    st.caption(
+        "Upload a filled-out CA Quota Input Form `.xlsb` file. Every tab that "
+        "looks like a quota data tab (any name — \"Quota\", \"SCA Off\", "
+        "\"Full Book BDM\", etc.) is read automatically. Unlike SPP/NY SOD, "
+        "each product/brand row here becomes its own Tracker, since goal "
+        "type, UOM, and basis flag can all vary row-by-row even on one tab."
+    )
+
+    ca_file = st.file_uploader(
+        "CA Quota Input Form (.xlsb)",
+        type=["xlsb"],
+        key="ca_quota_file",
+    )
+
+    collection_file = st.file_uploader(
+        "Override Collection Report (.xlsx) — optional",
+        type=["xlsx"],
+        help="Leave blank to use the bundled collection report.",
+        key="ca_collection_file",
+    )
+
+    if "ca_last_file_name" not in st.session_state:
+        st.session_state.ca_last_file_name = None
+
+    if ca_file and ca_file.name != st.session_state.ca_last_file_name:
+        st.session_state.ca_last_file_name = ca_file.name
+        st.session_state.ca_tabs           = None
+        st.session_state.ca_manual_mapping = {}
+        st.session_state.ca_result         = None
+
+    if ca_file:
+        if collection_file:
+            coll_source = collection_file.getvalue()
+            coll_source_label = f"Uploaded: {collection_file.name}"
+        elif Path(BUNDLED_COLLECTION).is_file():
+            coll_source = BUNDLED_COLLECTION
+            coll_source_label = f"Bundled: {Path(BUNDLED_COLLECTION).name}"
+        else:
+            coll_source = None
+            coll_source_label = "No collection report found"
+
+        collections = get_state_collections("CA", coll_source) if coll_source else {}
+        st.caption(f"Collection report: {coll_source_label}")
+
+        if st.session_state.get("ca_tabs") is None:
+            with st.spinner("Scanning workbook for quota tabs…"):
+                with tempfile.NamedTemporaryFile(suffix=".xlsb", delete=False) as f:
+                    f.write(ca_file.getvalue())
+                    tmp = f.name
+                try:
+                    st.session_state.ca_tabs = cagen.extract_goal_groups(tmp)
+                finally:
+                    os.unlink(tmp)
+
+        ca_tabs = st.session_state.ca_tabs
+
+        if ca_tabs and collections:
+            with st.expander("Collection ID Mapping", expanded=True):
+                st.caption(
+                    f"State: **CA** — {len(collections)} collection(s) available. "
+                    "Match each quota tab to its Salesforce Collection ID."
+                )
+                st.caption(
+                    "ℹ️ Tab names (e.g. \"SCA Off\", \"Full Book BDM\") rarely match "
+                    "a Salesforce collection name exactly — auto-match is a best "
+                    "guess. Verify each one before generating. A blank **(none)** "
+                    "means no match was found, not that no collection exists."
+                )
+                options = ["(none)"] + list(collections.keys())
+                manual_mapping = {}
+
+                with st.container(height=400):
+                    for tab_name in ca_tabs:
+                        best = gen_auto_match_ca(tab_name, collections)
+                        default_idx = options.index(best) if best and best in options else 0
+                        selected = st.selectbox(
+                            tab_name,
+                            options,
+                            index=default_idx,
+                            key=f"ca_cmap_{tab_name}",
+                        )
+                        if selected != "(none)":
+                            manual_mapping[tab_name.lower()] = collections[selected]
+
+                st.session_state.ca_manual_mapping = manual_mapping
+
+        elif ca_tabs and not collections:
+            st.info("No CA collections found in the collection report. `salesforce_collection_ids` will be blank.")
+        elif ca_file and not ca_tabs:
+            st.warning("⚠️ No quota data tabs were recognized in this workbook.")
+
+    generate_clicked = st.button(
+        "Generate CSV",
+        type="primary",
+        disabled=(ca_file is None),
+        use_container_width=True,
+        key="ca_generate_button",
+    )
+
+    if generate_clicked and ca_file is not None:
+        with st.spinner("Processing quota tabs…"):
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    ca_path = os.path.join(tmpdir, ca_file.name)
+                    with open(ca_path, "wb") as f:
+                        f.write(ca_file.getvalue())
+
+                    output_path  = os.path.join(tmpdir, "ca_quota_upload.csv")
+                    skipped_path = os.path.join(tmpdir, "ca_quota_skipped.csv")
+
+                    cagen.spp.COLLECTION_LOOKUP = st.session_state.get("ca_manual_mapping", {})
+
+                    records, skipped, tab_names = cagen.load_workbook(ca_path)
+                    if not records:
+                        raise ValueError("No valid records found in any quota tab after filtering.")
+
+                    order, groups = cagen.group_records(records)
+                    total_trackers, total_ptgs = cagen.generate_output(order, groups, output_path)
+                    duplicate_names = cagen.find_duplicate_ptg_names(order, groups)
+
+                    if skipped:
+                        cagen.write_skipped_csv(skipped_path, skipped)
+
+                    with open(output_path, "rb") as f:
+                        output_bytes = f.read()
+
+                    skipped_bytes = None
+                    if skipped and os.path.exists(skipped_path):
+                        with open(skipped_path, "rb") as f:
+                            skipped_bytes = f.read()
+
+                st.session_state.ca_result = {
+                    "error":           None,
+                    "tab_names":       tab_names,
+                    "total_trackers":  total_trackers,
+                    "total_ptgs":      total_ptgs,
+                    "skipped":         skipped,
+                    "duplicate_names": duplicate_names,
+                    "output_bytes":    output_bytes,
+                    "skipped_bytes":   skipped_bytes,
+                    "base_name":       os.path.splitext(ca_file.name)[0],
+                }
+
+            except Exception as exc:
+                st.session_state.ca_result = {"error": str(exc)}
+
+    result = st.session_state.get("ca_result")
+
+    if result:
+        st.divider()
+
+        if result.get("error"):
+            st.error(f"**Error:** {result['error']}")
+        else:
+            st.caption(f"Quota tabs read: {result['tab_names']}")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Trackers", result["total_trackers"])
+            c2.metric("PTGs", result["total_ptgs"])
+            c3.metric("Skipped rows/tabs", len(result["skipped"]))
+
+            if result["skipped"]:
+                st.warning(f"⚠️ {len(result['skipped'])} row(s)/tab(s) were skipped — review before uploading.")
+                with st.expander("View skipped rows"):
+                    for entry in result["skipped"]:
+                        st.markdown(f"**Row {entry['row_num']}** &nbsp;·&nbsp; {entry['reason']}")
+            else:
+                st.success("✅ All rows processed — no skipped rows.")
+
+            if result.get("duplicate_names"):
+                st.warning(
+                    f"⚠️ {len(result['duplicate_names'])} goal name(s) repeat within the same tab."
+                )
+                with st.expander("View repeated goal names"):
+                    for d in result["duplicate_names"]:
+                        st.markdown(
+                            f"Tab `{d['tracker']}` · Goal Name `{d['ptg_name']}` · source rows: {d['row_nums']}"
+                        )
+
+            st.divider()
+
+            base = result["base_name"]
+            st.download_button(
+                label="⬇️  Download CA Quota Upload CSV",
+                data=result["output_bytes"],
+                file_name=f"{base}_ca_quota_upload.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="ca_download_csv",
+            )
+            if result["skipped_bytes"]:
+                st.download_button(
+                    label="⬇️  Download Skipped Rows CSV",
+                    data=result["skipped_bytes"],
+                    file_name=f"{base}_skipped.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="ca_download_skipped",
+                )
+
+
+def gen_auto_match_ca(tab_name, collections):
+    """Best-effort auto-match for a CA quota tab name against the CA
+    Salesforce collection names (which use a 'CI - CA - INC - ...' prefix
+    convention, unlike SPP's 'CI - SPP - <ST> - ...'). Falls back to None —
+    the dropdown always lets a human pick the right one."""
+    candidates = [tab_name, f"CI - CA - INC - {tab_name}"]
+    for candidate in candidates:
+        for cname in collections:
+            if cname.lower() == candidate.lower():
+                return cname
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Tab 3: NY SOD Revision Recap
 # ---------------------------------------------------------------------------
 
@@ -786,13 +1008,14 @@ with st.sidebar:
         st.image(str(CI_LOGO), use_container_width=True)
     st.header("LPM Upload Generator")
     st.markdown("""
-Four tools, one app:
+Five tools, one app:
 - **SPP Generator** — SPP Goal Builder `.xlsm` → LPM upload CSV
 - **NY SOD Generator** — NY Monthly Quota Planner `.xlsb` → LPM upload CSV
+- **CA Union Quota Generator** — CA Quota Input Form `.xlsb` → LPM upload CSV
 - **NY SOD Revision Recap** — diff an INPUT vs FINAL NY SOD file
 - **SPP Template Checker** — scan a Goal Builder for data-entry problems before generating
 
-The **LPM Collection Report** is bundled automatically for both generators.
+The **LPM Collection Report** is bundled automatically for all generators.
 """)
     st.divider()
     st.caption("LPM Upload Generator · Southern Glazer's")
@@ -802,8 +1025,8 @@ The **LPM Collection Report** is bundled automatically for both generators.
 # ---------------------------------------------------------------------------
 st.title("LPM Upload Generator")
 
-tab_spp, tab_sod, tab_recap, tab_checker = st.tabs(
-    ["SPP Generator", "NY SOD Generator", "NY SOD Revision Recap", "SPP Template Checker"]
+tab_spp, tab_sod, tab_ca, tab_recap, tab_checker = st.tabs(
+    ["SPP Generator", "NY SOD Generator", "CA Union Quota Generator", "NY SOD Revision Recap", "SPP Template Checker"]
 )
 
 with tab_spp:
@@ -811,6 +1034,9 @@ with tab_spp:
 
 with tab_sod:
     render_sod_tab()
+
+with tab_ca:
+    render_ca_quota_tab()
 
 with tab_checker:
     render_checker_tab()
