@@ -98,12 +98,6 @@ VOL_UOM_MAP = {
     "STD":     "STD",
 }
 
-# "Cases/ Bottles" column -> LPM goal_uom, for POD/ACS/NewPOD/NewACS rows
-POD_UOM_MAP = {
-    "CASE(S)":   "Cases",
-    "BOTTLE(S)": "Bottles",
-}
-
 # "Goal Type" column values that trigger basis_flag = TRUE
 BASIS_TRUE_CRITERIA = {"% INCREASE/DECREASE"}
 
@@ -218,15 +212,12 @@ def load_quota_tab(xlsb_path, sheet_name, header_row_idx, tracked_period_raw):
             skipped.append({"row_num": excel_row, "reason": "no Goal value", "raw_row": raw_row})
             continue
 
-        if goal_type in spp.DISTRIBUTION_TYPES:
-            cases_bottles = spp.safe_str(gv("cases/ bottles")).upper()
-            goal_uom = POD_UOM_MAP.get(cases_bottles)
-            if not goal_uom:
-                uom_raw = spp.safe_str(gv("unit of measure")).upper()
-                goal_uom = VOL_UOM_MAP.get(uom_raw, "Cases")
-        else:
-            uom_raw = spp.safe_str(gv("unit of measure")).upper()
-            goal_uom = VOL_UOM_MAP.get(uom_raw, "")
+        # goal_uom always comes from "Unit of Measure" (9L/Decimal/STD), for
+        # every goal_type. "Cases/ Bottles" is a separate column describing
+        # the unit of "POD/ACS Min Quantity" (-> achievement_min) only -- it
+        # is not the tracker's overall goal_uom, even on distribution rows.
+        uom_raw = spp.safe_str(gv("unit of measure")).upper()
+        goal_uom = VOL_UOM_MAP.get(uom_raw, "")
 
         goal_criteria = spp.safe_str(gv("goal type")).upper()
         basis_flag = "TRUE" if goal_criteria in BASIS_TRUE_CRITERIA else "FALSE"
