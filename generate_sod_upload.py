@@ -10,14 +10,14 @@ mapping and date resolution.
 Usage:
     python generate_sod_upload.py <goal_sheet.xlsb> [output_csv] [collection_report.xlsx]
 
-One Tracker is generated per unique (Division, goal_type, unsold-period,
-Tracking Start/End) combination; every GOAL SHEET row under that combination
-becomes a PTG row.
+One Tracker is generated per unique (Division, goal_type, goal_uom,
+Tracking Start/End, unsold-period, Premise, Must Make) combination; every
+GOAL SHEET row under that combination becomes a PTG row. SOD goes into LPM
+as quotas, so program_class is the literal string "QUO" for every tracker
+(not an enum path like SPP's "ProgramClass.Site.Sppa") — confirmed, not an
+open assumption.
 
 Open assumptions (confirm/adjust before relying on this in production):
-  - program_class is the literal string "QUO" for every tracker (not an
-    enum path like SPP's "ProgramClass.Site.Sppa") — confirm the exact
-    value LPM expects.
   - "Reverse MS" (Goal of Unsold) is treated like "Market Share" (Unit Goal)
     for distribution purposes (min_objective_target blank, distribution_target
     = the "Goal" column value) — only basis_flag differs (FALSE vs TRUE).
@@ -197,6 +197,7 @@ def load_goal_sheet(xlsb_path):
         goal_type_raw = spp.safe_str(gv("Goal Type"))
         goal_criteria = spp.safe_str(gv("Goal Criteria"))
         premise = spp.safe_str(gv("Premise - On or Off Only")).upper()
+        must_make = spp.safe_str(gv("Must Make"))
 
         raw_row = [gv(c) for c in GOAL_SHEET_COLUMNS]
 
@@ -263,6 +264,7 @@ def load_goal_sheet(xlsb_path):
             "goal_value":           goal_value,
             "pod_attribute":        pod_attribute,
             "premise":              premise,
+            "must_make":            must_make,
         })
 
     return records, skipped, anchor_year, anchor_month
@@ -278,12 +280,16 @@ def group_key(rec):
     # (e.g. JUL-AUG vs AUG-AUG) must land in separate Trackers. Premise (On
     # premise/Off premise) has no LPM CSV field of its own, but still gates
     # grouping -- an On-only row and an Off-only row must not share a
-    # Tracker just because everything else matches.
+    # Tracker just because everything else matches. Must Make (and NYU's
+    # Anchor/Flex, which share the same GOAL SHEET column) likewise gates
+    # grouping -- a Must Make row and a regular row must not land in the
+    # same Tracker just because every other field matches, mirroring how
+    # SPP's spp_tier (Anchor/Flex) is part of its own group_key.
     return (
         rec["division"], rec["goal_type"], rec["goal_uom"],
         rec["start_yyyymm"], rec["end_yyyymm"],
         rec["unsold_start_yyyymm"], rec["unsold_end_yyyymm"],
-        rec["premise"],
+        rec["premise"], rec["must_make"],
     )
 
 
@@ -299,7 +305,7 @@ def group_records(records):
 
 
 def build_tracker_row(key, recs):
-    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, _premise = key
+    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, _premise, _must_make = key
     return {
         "goal_category":                  "Tracker",
         "goal_name":                      division,
