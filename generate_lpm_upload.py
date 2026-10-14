@@ -723,7 +723,6 @@ def group_key(rec):
         rec["basis_start_yyyymm"],
         rec["basis_end_yyyymm"],
         unsold,
-        rec["premise"],
     )
     # NV only: on top of the normal grouping above, also split/merge by the
     # Category column's alpha family (Wine/Beer/Spirits, digits stripped) so

@@ -297,10 +297,10 @@ def extract_goal_groups(xlsb_path):
 # not the Tracker, exactly like NY SOD -- so it correctly does NOT gate
 # grouping, since two rows can share a Tracker with different Goal Type
 # criteria (Fixed vs % Increase/Decrease) the same way NY SOD allows it.
-# Premise (ALL/ON/OFF) has no LPM CSV field of its own, but still gates
-# grouping -- an ON-only row and an OFF-only row must not share a Tracker
-# just because everything else matches (same fix applied to SPP's
-# "Applicable Premise" and NY SOD's "Premise - On or Off Only" columns).
+# Premise (ALL/ON/OFF) has no LPM CSV field of its own and does not gate
+# grouping -- an ON-only row and an OFF-only row can share a Tracker within
+# the same sheet/segment (same change applied to SPP's "Applicable Premise"
+# and NY SOD's "Premise - On or Off Only" columns).
 # ---------------------------------------------------------------------------
 
 def group_key(rec):
@@ -308,7 +308,6 @@ def group_key(rec):
         rec["sheet_name"], rec["goal_type"], rec["goal_uom"],
         rec["goal_start_yyyymm"], rec["goal_end_yyyymm"],
         rec["unsold_start_yyyymm"], rec["unsold_end_yyyymm"],
-        rec["premise"],
     )
 
 
@@ -324,7 +323,7 @@ def group_records(records):
 
 
 def build_tracker_row(key, recs):
-    sheet_name, goal_type, goal_uom, start, end, unsold_start, unsold_end, _premise = key
+    sheet_name, goal_type, goal_uom, start, end, unsold_start, unsold_end = key
     return {
         "goal_category":                  "Tracker",
         "goal_name":                      sheet_name,

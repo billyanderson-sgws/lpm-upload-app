@@ -278,18 +278,17 @@ def group_key(rec):
     # Key on the actual resolved unsold window, not just presence — two rows
     # with the same goal_type/tracking period but different unsold periods
     # (e.g. JUL-AUG vs AUG-AUG) must land in separate Trackers. Premise (On
-    # premise/Off premise) has no LPM CSV field of its own, but still gates
-    # grouping -- an On-only row and an Off-only row must not share a
-    # Tracker just because everything else matches. Must Make (and NYU's
-    # Anchor/Flex, which share the same GOAL SHEET column) likewise gates
-    # grouping -- a Must Make row and a regular row must not land in the
-    # same Tracker just because every other field matches, mirroring how
-    # SPP's spp_tier (Anchor/Flex) is part of its own group_key.
+    # premise/Off premise) has no LPM CSV field of its own and does not gate
+    # grouping -- an On-only row and an Off-only row can share a Tracker.
+    # Must Make (and NYU's Anchor/Flex, which share the same GOAL SHEET
+    # column) still gates grouping -- a Must Make row and a regular row must
+    # not land in the same Tracker just because every other field matches,
+    # mirroring how SPP's spp_tier (Anchor/Flex) is part of its own group_key.
     return (
         rec["division"], rec["goal_type"], rec["goal_uom"],
         rec["start_yyyymm"], rec["end_yyyymm"],
         rec["unsold_start_yyyymm"], rec["unsold_end_yyyymm"],
-        rec["premise"], rec["must_make"],
+        rec["must_make"],
     )
 
 
@@ -305,7 +304,7 @@ def group_records(records):
 
 
 def build_tracker_row(key, recs):
-    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, _premise, _must_make = key
+    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, _must_make = key
     return {
         "goal_category":                  "Tracker",
         "goal_name":                      division,
