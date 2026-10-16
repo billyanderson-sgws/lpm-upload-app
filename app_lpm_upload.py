@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate_lpm_upload as gen
 import generate_sod_upload as sodgen
 import generate_ca_quota_upload as cagen
+import generate_sam_spp_upload as samgen
 import ny_sod_revision_recap as recap
 import check_spp_template as checker
 
@@ -48,6 +49,28 @@ def extract_goal_groups(xlsm_bytes):
         if "Tracking Table" not in wb.sheetnames:
             return []
         ws = wb["Tracking Table"]
+        groups, seen = [], set()
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            g = str(row[0]).strip() if row[0] else ""
+            if g and g not in seen:
+                seen.add(g)
+                groups.append(g)
+        wb.close()
+        return groups
+    finally:
+        os.unlink(tmp)
+
+
+def extract_sam_goal_groups(xlsx_bytes):
+    """Return unique non-blank goal groups from the CR SAM 'SPP Export' sheet, in order."""
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
+        f.write(xlsx_bytes)
+        tmp = f.name
+    try:
+        wb = openpyxl.load_workbook(tmp, keep_vba=True, data_only=True, read_only=True)
+        if samgen.SOURCE_SHEET_NAME not in wb.sheetnames:
+            return []
+        ws = wb[samgen.SOURCE_SHEET_NAME]
         groups, seen = [], set()
         for row in ws.iter_rows(min_row=2, values_only=True):
             g = str(row[0]).strip() if row[0] else ""
@@ -450,6 +473,249 @@ def render_spp_tab():
                     mime="text/csv",
                     use_container_width=True,
                     key="spp_download_skipped",
+                )
+
+
+# ---------------------------------------------------------------------------
+# Tab 1b: CR SAM SPP Generator
+# ---------------------------------------------------------------------------
+
+def render_sam_spp_tab():
+    st.subheader("CR SAM SPP LPM Upload Generator")
+    st.info("📌 Designed for use with the **CR SAM NextGen** goal file template.")
+    st.caption(
+        "Upload a CR SAM NextGen Goal File `.xlsx` (reads the **SPP Export** "
+        "sheet — already laid out in Tracking Table column order), confirm "
+        "the Collection ID mapping, and generate the LPM upload CSV. State is "
+        "read from the sheet's Goal Group text (falls back to the filename "
+        "if that's not found)."
+    )
+
+    sam_file = st.file_uploader(
+        "CR SAM NextGen Goal File (.xlsx)",
+        type=["xlsx"],
+        key="sam_goal_file",
+    )
+
+    collection_file = st.file_uploader(
+        "Override Collection Report (.xlsx) — optional",
+        type=["xlsx"],
+        help="Leave blank to use the bundled collection report.",
+        key="sam_collection_file",
+    )
+
+    if "sam_last_file_name" not in st.session_state:
+        st.session_state.sam_last_file_name = None
+
+    if sam_file and sam_file.name != st.session_state.sam_last_file_name:
+        st.session_state.sam_last_file_name = sam_file.name
+        st.session_state.sam_goal_groups    = None
+        st.session_state.sam_manual_mapping = {}
+        st.session_state.sam_result         = None
+
+    if sam_file:
+        state = gen.derive_state_from_filename(sam_file.name)
+
+        if collection_file:
+            coll_source = collection_file.getvalue()
+            coll_source_label = f"Uploaded: {collection_file.name}"
+        elif Path(BUNDLED_COLLECTION).is_file():
+            coll_source = BUNDLED_COLLECTION
+            coll_source_label = f"Bundled: {Path(BUNDLED_COLLECTION).name}"
+        else:
+            coll_source = None
+            coll_source_label = "No collection report found"
+
+        collections = get_state_collections(state, coll_source) if coll_source else {}
+        st.caption(f"Collection report: {coll_source_label}")
+
+        if st.session_state.get("sam_goal_groups") is None:
+            with st.spinner("Reading SPP Export…"):
+                st.session_state.sam_goal_groups = extract_sam_goal_groups(sam_file.getvalue())
+
+        goal_groups = st.session_state.sam_goal_groups
+
+        if goal_groups and collections:
+            with st.expander("Collection ID Mapping", expanded=True):
+                st.caption(
+                    f"State: **{state}** — {len(collections)} collection(s) available. "
+                    "Match each Goal Group to its Salesforce Collection ID."
+                )
+                st.caption(
+                    "ℹ️ Collection IDs below are auto-matched by Goal Group name — "
+                    "verify each one before generating. A blank **(none)** means no "
+                    "match was found, not that no collection exists for that group."
+                )
+                options = ["(none)"] + list(collections.keys())
+                manual_mapping = {}
+
+                with st.container(height=400):
+                    for group in goal_groups:
+                        best = auto_match(group, state, collections)
+                        default_idx = options.index(best) if best and best in options else 0
+                        selected = st.selectbox(
+                            group,
+                            options,
+                            index=default_idx,
+                            key=f"sam_cmap_{group}",
+                        )
+                        if selected != "(none)":
+                            manual_mapping[group.lower()] = collections[selected]
+
+                st.session_state.sam_manual_mapping = manual_mapping
+
+        elif goal_groups and not collections:
+            st.info(
+                f"State: **{state}** — no collections found in the collection report. "
+                "`salesforce_collection_ids` will be blank."
+            )
+
+    generate_clicked = st.button(
+        "Generate CSV",
+        type="primary",
+        disabled=(sam_file is None),
+        use_container_width=True,
+        key="sam_generate_button",
+    )
+
+    if generate_clicked and sam_file is not None:
+        with st.spinner("Processing SPP Export…"):
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    sam_path = os.path.join(tmpdir, sam_file.name)
+                    with open(sam_path, "wb") as f:
+                        f.write(sam_file.getvalue())
+
+                    output_path  = os.path.join(tmpdir, "sam_lpm_upload.csv")
+                    skipped_path = os.path.join(tmpdir, "sam_lpm_skipped.csv")
+
+                    wb_for_fiscal = openpyxl.load_workbook(sam_path, keep_vba=True, data_only=True)
+                    samgen.spp.INTERNAL_FISCAL_LOOKUP = samgen.spp.load_internal_fiscal_lookup(wb_for_fiscal)
+                    state_from_sheet = ""
+                    if samgen.SOURCE_SHEET_NAME in wb_for_fiscal.sheetnames:
+                        tt = wb_for_fiscal[samgen.SOURCE_SHEET_NAME]
+                        for r in range(2, tt.max_row + 1):
+                            ggv = tt.cell(r, 1).value
+                            if ggv:
+                                state_from_sheet = samgen.spp.derive_state_from_goal_group(str(ggv))
+                                if state_from_sheet:
+                                    break
+                    wb_for_fiscal.close()
+
+                    state = state_from_sheet or samgen.spp.derive_state_from_filename(sam_path)
+                    samgen.spp.COLLECTION_LOOKUP = st.session_state.get("sam_manual_mapping", {})
+                    samgen.spp.CURRENT_STATE = state
+
+                    fiscal_path = _APP_DIR / "Supplier Fiscal Start Month.xlsx"
+                    samgen.spp.FISCAL_LOOKUP = (
+                        samgen.spp.load_fiscal_lookup(str(fiscal_path)) if fiscal_path.is_file() else {}
+                    )
+
+                    records, skipped, header_row = samgen.load_sam_spp_export(sam_path)
+                    if not records:
+                        raise ValueError(f"No valid records found in the '{samgen.SOURCE_SHEET_NAME}' sheet after filtering.")
+
+                    order, groups = samgen.spp.group_records(records)
+                    total_trackers, total_ptgs = samgen.spp.generate_output(order, groups, output_path)
+                    duplicate_names = samgen.spp.find_duplicate_ptg_names(order, groups)
+
+                    if skipped:
+                        samgen.spp.write_skipped_csv(skipped_path, skipped, header_row)
+
+                    with open(output_path, "rb") as f:
+                        output_bytes = f.read()
+
+                    skipped_bytes = None
+                    if skipped and os.path.exists(skipped_path):
+                        with open(skipped_path, "rb") as f:
+                            skipped_bytes = f.read()
+
+                    collection_info = [
+                        f"{group}  →  {cid}"
+                        for group, cid in sorted(samgen.spp.COLLECTION_LOOKUP.items())
+                    ]
+
+                st.session_state.sam_result = {
+                    "error":            None,
+                    "state":            state,
+                    "total_trackers":   total_trackers,
+                    "total_ptgs":       total_ptgs,
+                    "skipped":          skipped,
+                    "duplicate_names":  duplicate_names,
+                    "output_bytes":     output_bytes,
+                    "skipped_bytes":    skipped_bytes,
+                    "base_name":        os.path.splitext(sam_file.name)[0],
+                    "collection_info":  collection_info,
+                }
+
+            except Exception as exc:
+                st.session_state.sam_result = {"error": str(exc)}
+
+    result = st.session_state.get("sam_result")
+
+    if result:
+        st.divider()
+
+        if result.get("error"):
+            st.error(f"**Error:** {result['error']}")
+        else:
+            if result["collection_info"]:
+                with st.expander(
+                    f"State: **{result['state']}** — {len(result['collection_info'])} collection ID(s) applied",
+                    expanded=False,
+                ):
+                    for line in result["collection_info"]:
+                        st.text(line)
+            else:
+                st.info("`salesforce_collection_ids` will be blank — no collections were mapped.")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Trackers", result["total_trackers"])
+            c2.metric("PTGs", result["total_ptgs"])
+            c3.metric("Skipped rows", len(result["skipped"]))
+
+            if result["skipped"]:
+                st.warning(f"⚠️ {len(result['skipped'])} row(s) were skipped — review before uploading.")
+                with st.expander("View skipped rows"):
+                    for entry in result["skipped"]:
+                        goal_group = (entry["raw_row"][0] or "") if entry["raw_row"] else ""
+                        st.markdown(
+                            f"**Row {entry['row_num']}** &nbsp;·&nbsp; "
+                            f"`{goal_group}` &nbsp;·&nbsp; {entry['reason']}"
+                        )
+            else:
+                st.success("✅ All rows processed — no skipped rows.")
+
+            if result.get("duplicate_names"):
+                st.warning(
+                    f"⚠️ {len(result['duplicate_names'])} PTG name(s) repeat within the same Tracker — "
+                    "LPM may treat them as one on import."
+                )
+                with st.expander("View repeated PTG names"):
+                    for d in result["duplicate_names"]:
+                        st.markdown(
+                            f"Tracker `{d['tracker']}` · PTG `{d['ptg_name']}` · source rows: {d['row_nums']}"
+                        )
+
+            st.divider()
+
+            base = result["base_name"]
+            st.download_button(
+                label="⬇️  Download LPM Upload CSV",
+                data=result["output_bytes"],
+                file_name=f"{base}_lpm_upload.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="sam_download_csv",
+            )
+            if result["skipped_bytes"]:
+                st.download_button(
+                    label="⬇️  Download Skipped Rows CSV",
+                    data=result["skipped_bytes"],
+                    file_name=f"{base}_skipped.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="sam_download_skipped",
                 )
 
 
@@ -1008,8 +1274,9 @@ with st.sidebar:
         st.image(str(CI_LOGO), use_container_width=True)
     st.header("LPM Upload Generator")
     st.markdown("""
-Five tools, one app:
+Six tools, one app:
 - **SPP Generator** — SPP Goal Builder `.xlsm` → LPM upload CSV
+- **CR SAM SPP Generator** — CR SAM NextGen Goal File `.xlsx` (SPP Export sheet) → LPM upload CSV
 - **NY SOD Generator** — NY Monthly Quota Planner `.xlsb` → LPM upload CSV
 - **CA Union Quota Generator** — CA Quota Input Form `.xlsb` → LPM upload CSV
 - **NY SOD Revision Recap** — diff an INPUT vs FINAL NY SOD file
@@ -1025,12 +1292,15 @@ The **LPM Collection Report** is bundled automatically for all generators.
 # ---------------------------------------------------------------------------
 st.title("LPM Upload Generator")
 
-tab_spp, tab_sod, tab_ca, tab_recap, tab_checker = st.tabs(
-    ["SPP Generator", "NY SOD Generator", "CA Union Quota Generator", "NY SOD Revision Recap", "SPP Template Checker"]
+tab_spp, tab_sam, tab_sod, tab_ca, tab_recap, tab_checker = st.tabs(
+    ["SPP Generator", "CR SAM SPP Generator", "NY SOD Generator", "CA Union Quota Generator", "NY SOD Revision Recap", "SPP Template Checker"]
 )
 
 with tab_spp:
     render_spp_tab()
+
+with tab_sam:
+    render_sam_spp_tab()
 
 with tab_sod:
     render_sod_tab()
