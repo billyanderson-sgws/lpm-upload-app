@@ -514,7 +514,23 @@ def render_sam_spp_tab():
         st.session_state.sam_result         = None
 
     if sam_file:
-        state = gen.derive_state_from_filename(sam_file.name)
+        if st.session_state.get("sam_goal_groups") is None:
+            with st.spinner("Reading SPP Export…"):
+                st.session_state.sam_goal_groups = extract_sam_goal_groups(sam_file.getvalue())
+
+        goal_groups = st.session_state.sam_goal_groups
+
+        # State is read from the sheet's own Goal Group text (same source the
+        # Generate step uses) — the filename alone (e.g. "MO_SAM_NextGen_...")
+        # doesn't match derive_state_from_filename's expected pattern and
+        # resolves to garbage, which silently zeroed out the collection list.
+        state = ""
+        for group in goal_groups:
+            state = samgen.spp.derive_state_from_goal_group(group)
+            if state:
+                break
+        if not state:
+            state = gen.derive_state_from_filename(sam_file.name)
 
         if collection_file:
             coll_source = collection_file.getvalue()
@@ -528,12 +544,6 @@ def render_sam_spp_tab():
 
         collections = get_state_collections(state, coll_source) if coll_source else {}
         st.caption(f"Collection report: {coll_source_label}")
-
-        if st.session_state.get("sam_goal_groups") is None:
-            with st.spinner("Reading SPP Export…"):
-                st.session_state.sam_goal_groups = extract_sam_goal_groups(sam_file.getvalue())
-
-        goal_groups = st.session_state.sam_goal_groups
 
         if goal_groups and collections:
             with st.expander("Collection ID Mapping", expanded=True):
