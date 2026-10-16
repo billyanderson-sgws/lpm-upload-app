@@ -65,8 +65,8 @@ def load_sam_spp_export(wb_path):
     Read the "SPP Export" sheet and return (records, skipped_rows, header_row),
     in the same shape as generate_lpm_upload.load_tracking_table().
     """
-    wb_formula = openpyxl.load_workbook(wb_path, keep_vba=True, data_only=False)
-    wb = openpyxl.load_workbook(wb_path, keep_vba=True, data_only=True)
+    wb_formula = openpyxl.load_workbook(wb_path, read_only=True, data_only=False)
+    wb = openpyxl.load_workbook(wb_path, read_only=True, data_only=True)
 
     if SOURCE_SHEET_NAME not in wb.sheetnames:
         raise ValueError(
@@ -76,7 +76,17 @@ def load_sam_spp_export(wb_path):
 
     ws_formula = wb_formula[SOURCE_SHEET_NAME]
     ws = wb[SOURCE_SHEET_NAME]
-    header_row = [ws.cell(1, c).value for c in range(1, 28)]
+
+    # Read_only sheets only support fast sequential access (iter_rows) — random
+    # .cell(r, c) access there re-scans from the top of the sheet every call,
+    # which is O(row number) per call and O(n^2) over a full pass. For a
+    # large multi-sheet CR SAM workbook that turns a sub-second read into a
+    # multi-minute hang, so both the cached and formula views are walked in
+    # lockstep instead.
+    formula_rows = ws_formula.iter_rows(min_row=1, max_col=27, values_only=True)
+    data_rows    = ws.iter_rows(min_row=1, max_col=27, values_only=True)
+    header_row = list(next(data_rows))
+    next(formula_rows)
 
     records = []
     skipped = []
@@ -84,13 +94,14 @@ def load_sam_spp_export(wb_path):
     def make_skip(row_num, reason, raw):
         return {"row_num": row_num, "reason": reason, "raw_row": raw}
 
-    for r in range(2, ws.max_row + 1):
+    for r, (row_formula, row_data) in enumerate(zip(formula_rows, data_rows), start=2):
         def cv(c):
+            idx = c - 1
             if c in (5, 6, 7, 8):
-                return ws.cell(r, c).value
-            v = ws_formula.cell(r, c).value
+                return row_data[idx]
+            v = row_formula[idx]
             if isinstance(v, str) and v.startswith("="):
-                return ws.cell(r, c).value
+                return row_data[idx]
             return v
 
         goal_group  = spp.safe_str(cv(1))
@@ -121,9 +132,9 @@ def load_sam_spp_export(wb_path):
         dist_qual_qty      = cv(23)   # "Distribution Qualifier Qty", e.g. 3
         dist_qual_unit     = spp.safe_str(cv(24)).lower()  # "Distribution Qualifier Unit", e.g. "bottle"
         pod_attr    = cv(25)
-        category    = spp.safe_str(cv(27)) if ws.max_column >= 27 else ""
+        category    = spp.safe_str(cv(27))
 
-        raw_row = [ws.cell(r, c).value for c in range(1, 28)]
+        raw_row = list(row_data)
 
         if not goal_group and ptg_name_v is None and selection is None:
             continue
@@ -257,14 +268,13 @@ def main():
     else:
         print("Fiscal lookup not found — FYTD unsold periods will fall back to CYTD.")
 
-    wb_for_fiscal = openpyxl.load_workbook(input_path, keep_vba=True, data_only=True)
+    wb_for_fiscal = openpyxl.load_workbook(input_path, read_only=True, data_only=True)
     spp.INTERNAL_FISCAL_LOOKUP = spp.load_internal_fiscal_lookup(wb_for_fiscal)
 
     state_from_sheet = ""
     if SOURCE_SHEET_NAME in wb_for_fiscal.sheetnames:
         tt = wb_for_fiscal[SOURCE_SHEET_NAME]
-        for r in range(2, tt.max_row + 1):
-            gg = tt.cell(r, 1).value
+        for (gg,) in tt.iter_rows(min_row=2, max_col=1, values_only=True):
             if gg:
                 state_from_sheet = spp.derive_state_from_goal_group(str(gg))
                 if state_from_sheet:

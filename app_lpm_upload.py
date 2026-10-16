@@ -589,13 +589,12 @@ def render_sam_spp_tab():
                     output_path  = os.path.join(tmpdir, "sam_lpm_upload.csv")
                     skipped_path = os.path.join(tmpdir, "sam_lpm_skipped.csv")
 
-                    wb_for_fiscal = openpyxl.load_workbook(sam_path, keep_vba=True, data_only=True)
+                    wb_for_fiscal = openpyxl.load_workbook(sam_path, read_only=True, data_only=True)
                     samgen.spp.INTERNAL_FISCAL_LOOKUP = samgen.spp.load_internal_fiscal_lookup(wb_for_fiscal)
                     state_from_sheet = ""
                     if samgen.SOURCE_SHEET_NAME in wb_for_fiscal.sheetnames:
                         tt = wb_for_fiscal[samgen.SOURCE_SHEET_NAME]
-                        for r in range(2, tt.max_row + 1):
-                            ggv = tt.cell(r, 1).value
+                        for (ggv,) in tt.iter_rows(min_row=2, max_col=1, values_only=True):
                             if ggv:
                                 state_from_sheet = samgen.spp.derive_state_from_goal_group(str(ggv))
                                 if state_from_sheet:
