@@ -162,6 +162,14 @@ def safe_month(abbr):
     return MONTH_NUM.get(str(abbr).strip().upper())
 
 
+def month_before(yyyymm):
+    """Return the YYYYMM immediately preceding the given YYYYMM."""
+    year, month = int(yyyymm[:4]), int(yyyymm[4:6])
+    if month == 1:
+        return f"{year - 1}12"
+    return f"{year}{month - 1:02d}"
+
+
 # ---------------------------------------------------------------------------
 # Load GOAL SHEET
 # ---------------------------------------------------------------------------
@@ -234,6 +242,22 @@ def load_goal_sheet(xlsb_path):
             unsold_start_yyyymm, unsold_end_yyyymm = month_pair_to_yyyymm(
                 unsold_start_raw, unsold_end_raw, end_year, end_month
             )
+            # The unsold/basis period is the comparison window used to judge
+            # "new" distribution and must never overlap the tracking period --
+            # it has to end the month immediately before Tracking Start (e.g.
+            # a Sep-Oct tracker's unsold period must end in August).
+            expected_unsold_end = month_before(start_yyyymm)
+            if unsold_end_yyyymm != expected_unsold_end:
+                skipped.append({
+                    "row_num": excel_row,
+                    "reason": (
+                        f"Unsold/basis period overlaps or doesn't end the month "
+                        f"prior to Tracking Start: Unsold End resolved to "
+                        f"{unsold_end_yyyymm}, expected {expected_unsold_end}"
+                    ),
+                    "raw_row": raw_row,
+                })
+                continue
 
         measure = spp.safe_str(gv("Measure Decimal/9L/STD"))
         if goal_type in {"VolumeRevenueDREV"}:
