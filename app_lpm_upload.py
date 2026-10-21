@@ -83,6 +83,27 @@ def extract_sam_goal_groups(xlsx_bytes):
         os.unlink(tmp)
 
 
+def extract_sod_divisions(xlsb_bytes):
+    """Return unique non-blank divisions from the GOAL SHEET, in order."""
+    import pandas as pd
+    with tempfile.NamedTemporaryFile(suffix=".xlsb", delete=False) as f:
+        f.write(xlsb_bytes)
+        tmp = f.name
+    try:
+        df = pd.read_excel(tmp, sheet_name="GOAL SHEET", engine="pyxlsb", header=4)
+        divisions, seen = [], set()
+        for v in df.get("Division", []):
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                continue
+            d = sodgen.spp.safe_str(v)
+            if d and d not in seen:
+                seen.add(d)
+                divisions.append(d)
+        return divisions
+    finally:
+        os.unlink(tmp)
+
+
 def get_state_collections(state, source):
     """
     Return {display_name: collection_id} for the given state.
@@ -735,8 +756,8 @@ def render_sam_spp_tab():
 def render_sod_tab():
     st.subheader("NY SOD LPM Upload Generator")
     st.caption(
-        "Upload a NY Monthly Quota Planner `.xlsb` file (the GOAL SHEET tab) "
-        "and generate the LPM upload CSV."
+        "Upload a NY Monthly Quota Planner `.xlsb` file (the GOAL SHEET tab), "
+        "confirm the Collection ID mapping, and generate the LPM upload CSV."
     )
 
     sod_file = st.file_uploader(
@@ -744,6 +765,81 @@ def render_sod_tab():
         type=["xlsb"],
         key="sod_goal_sheet_file",
     )
+
+    collection_file = st.file_uploader(
+        "Override Collection Report (.xlsx) — optional",
+        type=["xlsx"],
+        help="Leave blank to use the bundled collection report.",
+        key="sod_collection_file",
+    )
+
+    if "sod_last_file_name" not in st.session_state:
+        st.session_state.sod_last_file_name = None
+
+    if sod_file and sod_file.name != st.session_state.sod_last_file_name:
+        st.session_state.sod_last_file_name = sod_file.name
+        st.session_state.sod_divisions      = None
+        st.session_state.sod_manual_mapping = {}
+        st.session_state.sod_result         = None
+
+    if sod_file:
+        if collection_file:
+            coll_source = collection_file.getvalue()
+            coll_source_label = f"Uploaded: {collection_file.name}"
+        elif Path(BUNDLED_COLLECTION).is_file():
+            coll_source = BUNDLED_COLLECTION
+            coll_source_label = f"Bundled: {Path(BUNDLED_COLLECTION).name}"
+        else:
+            coll_source = None
+            coll_source_label = "No collection report found"
+
+        collections = get_state_collections("NY", coll_source) if coll_source else {}
+        st.caption(f"Collection report: {coll_source_label}")
+
+        if st.session_state.get("sod_divisions") is None:
+            with st.spinner("Reading GOAL SHEET…"):
+                st.session_state.sod_divisions = extract_sod_divisions(sod_file.getvalue())
+
+        divisions = st.session_state.sod_divisions
+
+        if divisions and collections:
+            with st.expander("Collection ID Mapping", expanded=True):
+                st.caption(
+                    f"State: **NY** — {len(collections)} collection(s) available. "
+                    "Match each Division to its Salesforce Collection ID."
+                )
+                st.caption(
+                    "ℹ️ Collection IDs below are auto-matched by Division name — "
+                    "verify each one before generating. A blank **(none)** means no "
+                    "match was found, not that no collection exists for that division."
+                )
+                options = ["(none)"] + list(collections.keys())
+                manual_mapping = {}
+
+                with st.container(height=400):
+                    for division in divisions:
+                        best = None
+                        for cname in collections:
+                            if cname.lower() == division.lower():
+                                best = cname
+                                break
+                        default_idx = options.index(best) if best and best in options else 0
+                        selected = st.selectbox(
+                            division,
+                            options,
+                            index=default_idx,
+                            key=f"sod_cmap_{division}",
+                        )
+                        if selected != "(none)":
+                            manual_mapping[division.lower()] = collections[selected]
+
+                st.session_state.sod_manual_mapping = manual_mapping
+
+        elif divisions and not collections:
+            st.info(
+                "State: **NY** — no collections found in the collection report. "
+                "`salesforce_collection_ids` will be blank."
+            )
 
     generate_clicked = st.button(
         "Generate CSV",
@@ -764,10 +860,7 @@ def render_sod_tab():
                     output_path  = os.path.join(tmpdir, "sod_upload.csv")
                     skipped_path = os.path.join(tmpdir, "sod_skipped.csv")
 
-                    if Path(BUNDLED_COLLECTION).is_file():
-                        sodgen.spp.COLLECTION_LOOKUP = sodgen.spp.load_collection_lookup(BUNDLED_COLLECTION, "NY")
-                    else:
-                        sodgen.spp.COLLECTION_LOOKUP = {}
+                    sodgen.spp.COLLECTION_LOOKUP = st.session_state.get("sod_manual_mapping", {})
 
                     records, skipped, anchor_year, anchor_month = sodgen.load_goal_sheet(sod_path)
                     if not records:
@@ -788,6 +881,11 @@ def render_sod_tab():
                         with open(skipped_path, "rb") as f:
                             skipped_bytes = f.read()
 
+                    collection_info = [
+                        f"{division}  →  {cid}"
+                        for division, cid in sorted(sodgen.spp.COLLECTION_LOOKUP.items())
+                    ]
+
                 st.session_state.sod_result = {
                     "error":           None,
                     "anchor_year":     anchor_year,
@@ -799,6 +897,7 @@ def render_sod_tab():
                     "output_bytes":    output_bytes,
                     "skipped_bytes":   skipped_bytes,
                     "base_name":       os.path.splitext(sod_file.name)[0],
+                    "collection_info": collection_info,
                 }
 
             except Exception as exc:
@@ -813,6 +912,16 @@ def render_sod_tab():
             st.error(f"**Error:** {result['error']}")
         else:
             st.caption(f"Anchor: year={result['anchor_year']} month={result['anchor_month']}")
+
+            if result.get("collection_info"):
+                with st.expander(
+                    f"{len(result['collection_info'])} collection ID(s) applied",
+                    expanded=False,
+                ):
+                    for line in result["collection_info"]:
+                        st.text(line)
+            else:
+                st.info("`salesforce_collection_ids` will be blank — no collections were mapped.")
 
             c1, c2, c3 = st.columns(3)
             c1.metric("Trackers", result["total_trackers"])
