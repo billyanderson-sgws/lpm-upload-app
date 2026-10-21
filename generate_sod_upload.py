@@ -1,20 +1,35 @@
 """
 generate_sod_upload.py
 
-Reads the "GOAL SHEET" table from a NY SOD Monthly Quota Planner .xlsb file and
-generates LPM-format CSV files ready for upload to LiquidPerform. Fork of
-generate_lpm_upload.py (the SPP generator) — reuses its CSV schema, POD
-attribute map, and collection-lookup helpers, with NY SOD-specific column
-mapping and date resolution.
+Reads the "GOAL SHEET" table from a NY Monthly Quota Planner .xlsb file and
+generates LPM-format CSV files ready for upload to LiquidPerform ("NY
+Uploader" -- handles both NY Metro Quota and NY Upstate SPP divisions from
+one file). Fork of generate_lpm_upload.py (the SPP generator) — reuses its
+CSV schema, POD attribute map, and collection-lookup helpers, with NY
+Uploader-specific column mapping and date resolution.
 
 Usage:
     python generate_sod_upload.py <goal_sheet.xlsb> [output_csv] [collection_report.xlsx]
 
 One Tracker is generated per unique (Division, goal_type, goal_uom,
 Tracking Start/End, unsold-period, Premise, Must Make) combination; every
-GOAL SHEET row under that combination becomes a PTG row. SOD goes into LPM
-as quotas, so program_class is the enum path "ProgramClass.Site.Quo" for
-every tracker, matching SPP's "ProgramClass.Site.Sppa" convention.
+GOAL SHEET row under that combination becomes a PTG row.
+
+Every Division must start with "NYM" or "NYU" (division_group()) — rows
+under anything else are skipped and flagged. The two groups are handled
+differently end to end:
+  - NYM (NY Metro) rows go into LPM as Quotas: program_class is always the
+    flat enum path "ProgramClass.Site.Quo".
+  - NYU (NY Upstate) rows go into LPM as SPP: program_class is derived from
+    the Must Make column via spp.PROGRAM_CLASS_MAP (Anchor -> ...Sppa, Flex
+    -> ...Sppf), the same convention SPP itself uses. An NYU row whose Must
+    Make isn't "Anchor" or "Flex" is skipped and flagged rather than
+    guessing. Must Make already gates Tracker grouping (see group_key), so
+    Anchor/Flex trackers are kept separate automatically.
+  - Both groups now set send_to_proof to "SendStartingOnCalendarDate" (not
+    SPP's "SendStartingInActive") and resolve send_to_proof_date from
+    SEND_TO_PROOF_SCHEDULE, keyed by (anchor_year, anchor_month) -> group.
+    A month with no schedule entry leaves send_to_proof_date blank.
 
 Open assumptions (confirm/adjust before relying on this in production):
   - "Reverse MS" (Goal of Unsold) is treated like "Market Share" (Unit Goal)
@@ -65,16 +80,44 @@ import generate_lpm_upload as spp  # reuse CSV schema + helpers from the SPP gen
 CSV_COLUMNS = spp.CSV_COLUMNS
 
 SOD_CONFIG = {
-    "program_class":                  "ProgramClass.Site.Quo",
+    "program_class":                  "ProgramClass.Site.Quo",  # NYM (Quota) only -- NYU (SPP) uses spp.PROGRAM_CLASS_MAP via Must Make
     "score_by_td_linx_customer_code": "",
     "attainment_org_level":           "Salesperson",
     "recalculate_until_date":         "0",
     "exclude_from_os_sales_reports":  "FALSE",
     "salesforce_collection_ids":      "",
-    "send_to_proof":                  "SendStartingInActive",
+    "send_to_proof":                  "SendStartingOnCalendarDate",
     "send_to_proof_date":             "",
     "distribution_level_path":        "Salesperson",
 }
+
+# Division prefix -> which half of the NY Uploader a row belongs to:
+# "NYM" (NY Metro) rows go in as Quotas, "NYU" (NY Upstate) rows go in as
+# SPP, following SPP's own Anchor/Flex convention via the Must Make column.
+DIVISION_GROUPS = ("NYM", "NYU")
+
+# send_to_proof_date by (anchor_year, anchor_month) -> {division group: YYYYMMDD}.
+# NYM and NYU follow different send-to-proof schedules some months and the
+# same date other months -- add each month here as it's confirmed; a month
+# with no entry here leaves send_to_proof_date blank rather than guessing.
+SEND_TO_PROOF_SCHEDULE = {
+    (2026, 11): {"NYM": "20261105", "NYU": "20261104"},
+    (2026, 12): {"NYM": "20261203", "NYU": "20261203"},
+}
+
+
+def division_group(division):
+    """Return "NYM" or "NYU" based on the Division prefix, or None if neither."""
+    d = (division or "").strip().upper()
+    for group in DIVISION_GROUPS:
+        if d.startswith(group):
+            return group
+    return None
+
+
+def send_to_proof_date_for(anchor_year, anchor_month, group):
+    sched = SEND_TO_PROOF_SCHEDULE.get((anchor_year, anchor_month))
+    return sched.get(group, "") if sched else ""
 
 # GOAL SHEET "Goal Type" -> LPM goal_type (before unsold-period coercion)
 GOAL_TYPE_MAP = {
@@ -234,6 +277,23 @@ def load_goal_sheet(xlsb_path):
         if not goal_name and not division:
             continue
 
+        group = division_group(division)
+        if not group:
+            skipped.append({
+                "row_num": excel_row,
+                "reason": f"Division {division!r} doesn't start with NYM or NYU — unrecognized group, needs review",
+                "raw_row": raw_row,
+            })
+            continue
+
+        if group == "NYU" and must_make not in spp.PROGRAM_CLASS_MAP:
+            skipped.append({
+                "row_num": excel_row,
+                "reason": f"NYU (SPP) row has no valid Anchor/Flex in Must Make: {must_make!r}",
+                "raw_row": raw_row,
+            })
+            continue
+
         goal_type = GOAL_TYPE_MAP.get(goal_type_raw)
         if not goal_type:
             skipped.append({"row_num": excel_row, "reason": f"unknown Goal Type: {goal_type_raw!r}", "raw_row": raw_row})
@@ -287,7 +347,6 @@ def load_goal_sheet(xlsb_path):
                     ),
                     "raw_row": raw_row,
                 })
-            unsold_end_yyyymm = expected_unsold_end
             unsold_end_yyyymm = expected_unsold_end
 
         measure = spp.safe_str(gv("Measure Decimal/9L/STD"))
@@ -365,8 +424,14 @@ def group_records(records):
     return order, groups
 
 
-def build_tracker_row(key, recs):
-    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, _must_make = key
+def build_tracker_row(key, recs, anchor_year=None, anchor_month=None):
+    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, must_make = key
+    group = division_group(division)
+    if group == "NYU":
+        program_class = spp.PROGRAM_CLASS_MAP.get(must_make, "")
+    else:
+        program_class = SOD_CONFIG["program_class"]
+    send_to_proof_date = send_to_proof_date_for(anchor_year, anchor_month, group)
     return {
         "goal_category":                  "Tracker",
         "goal_name":                      division,
@@ -382,9 +447,9 @@ def build_tracker_row(key, recs):
         "recalculate_until_date":         SOD_CONFIG["recalculate_until_date"],
         "exclude_from_os_sales_reports":  SOD_CONFIG["exclude_from_os_sales_reports"],
         "salesforce_collection_ids":      spp.COLLECTION_LOOKUP.get(division.lower(), SOD_CONFIG["salesforce_collection_ids"]),
-        "program_class":                  SOD_CONFIG["program_class"],
+        "program_class":                  program_class,
         "send_to_proof":                  SOD_CONFIG["send_to_proof"],
-        "send_to_proof_date":             SOD_CONFIG["send_to_proof_date"],
+        "send_to_proof_date":             send_to_proof_date,
         "unsold_start_date":              unsold_start,
         "unsold_end_date":                unsold_end,
         "product_collection_id":          "",
@@ -450,7 +515,7 @@ def find_duplicate_ptg_names(order, groups):
     return dupes
 
 
-def generate_output(order, groups, output_path):
+def generate_output(order, groups, output_path, anchor_year=None, anchor_month=None):
     import csv
     total_trackers = 0
     total_ptgs = 0
@@ -459,7 +524,7 @@ def generate_output(order, groups, output_path):
         writer.writeheader()
         for key in order:
             recs = groups[key]
-            tracker_row = build_tracker_row(key, recs)
+            tracker_row = build_tracker_row(key, recs, anchor_year, anchor_month)
             writer.writerow(tracker_row)
             for rec in recs:
                 writer.writerow(build_ptg_row(rec))
@@ -522,7 +587,7 @@ def main():
     order, groups = group_records(records)
     base = os.path.splitext(output_path)[0]
     skipped_path = base + "_skipped.csv"
-    total_trackers, total_ptgs = generate_output(order, groups, output_path)
+    total_trackers, total_ptgs = generate_output(order, groups, output_path, anchor_year, anchor_month)
     duplicate_names = find_duplicate_ptg_names(order, groups)
 
     if skipped:

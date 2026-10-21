@@ -756,18 +756,21 @@ def render_sam_spp_tab():
 
 
 # ---------------------------------------------------------------------------
-# Tab 2: NY SOD Generator
+# Tab 2: NY Uploader
 # ---------------------------------------------------------------------------
 
 def render_sod_tab():
-    st.subheader("NY SOD LPM Upload Generator")
+    st.subheader("NY Uploader")
     st.caption(
         "Upload a NY Monthly Quota Planner `.xlsb` file (the GOAL SHEET tab), "
-        "confirm the Collection ID mapping, and generate the LPM upload CSV."
+        "confirm the Collection ID mapping, and generate the LPM upload CSV. "
+        "Handles both NY Metro Quota (Division starts with **NYM**) and "
+        "NY Upstate SPP (Division starts with **NYU**, Anchor/Flex from "
+        "Must Make) from the same file."
     )
 
     sod_file = st.file_uploader(
-        "NY SOD Goal Sheet (.xlsb)",
+        "NY Goal Sheet (.xlsb)",
         type=["xlsb"],
         key="sod_goal_sheet_file",
     )
@@ -870,7 +873,7 @@ def render_sod_tab():
                         raise ValueError("No valid records found in the GOAL SHEET after filtering.")
 
                     order, groups = sodgen.group_records(records)
-                    total_trackers, total_ptgs = sodgen.generate_output(order, groups, output_path)
+                    total_trackers, total_ptgs = sodgen.generate_output(order, groups, output_path, anchor_year, anchor_month)
                     duplicate_names = sodgen.find_duplicate_ptg_names(order, groups)
 
                     if skipped:
@@ -1408,7 +1411,7 @@ with st.sidebar:
 Six tools, one app:
 - **SPP Generator** — SPP Goal Builder `.xlsm` → LPM upload CSV
 - **CR SAM SPP Generator** — CR SAM NextGen Goal File `.xlsx` (SPP Export sheet) → LPM upload CSV
-- **NY SOD Generator** — NY Monthly Quota Planner `.xlsb` → LPM upload CSV
+- **NY Uploader** — NY Monthly Quota Planner `.xlsb` (NYM Quota + NYU SPP) → LPM upload CSV
 - **CA Union Quota Generator** — CA Quota Input Form `.xlsb` → LPM upload CSV
 - **NY SOD Revision Recap** — diff an INPUT vs FINAL NY SOD file
 - **SPP Template Checker** — scan a Goal Builder for data-entry problems before generating
@@ -1424,7 +1427,7 @@ The **LPM Collection Report** is bundled automatically for all generators.
 st.title("LPM Upload Generator")
 
 tab_spp, tab_sam, tab_sod, tab_ca, tab_recap, tab_checker = st.tabs(
-    ["SPP Generator", "CR SAM SPP Generator", "NY SOD Generator", "CA Union Quota Generator", "NY SOD Revision Recap", "SPP Template Checker"]
+    ["SPP Generator", "CR SAM SPP Generator", "NY Uploader", "CA Union Quota Generator", "NY SOD Revision Recap", "SPP Template Checker"]
 )
 
 with tab_spp:
