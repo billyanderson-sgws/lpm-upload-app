@@ -26,10 +26,10 @@ Open assumptions (confirm/adjust before relying on this in production):
     per-rep/per-unit figure), not "Goal" (the aggregate total) — "Goal" is
     still read and required (a row with no Goal value is skipped) but only
     used as a completeness check.
-  - min_objective_target is always "1" on the PTG row. achievement_min
-    carries the value the old min_objective_target logic used to produce:
-    blank for Fixed/Even-distribution Goal Criteria (Per Rep, Market Share,
-    Reverse MS), "1" otherwise.
+  - min_objective_target is always "1" on the PTG row. achievement_min is
+    only populated for distribution objectives (goal_type in
+    spp.POD_ATTR_TYPES) and brings across the raw "Min" column value
+    as-is (e.g. "3 btl", "1 cs") — blank for non-distro objectives.
   - product_collection_id is left blank — no equivalent source column has
     been identified yet in the GOAL SHEET.
   - Unsold End is always force-corrected to the month immediately before
@@ -105,12 +105,6 @@ UOM_MAP = {
     "9L":      "NineLiter",
     "STD":     "STD",
 }
-
-# GOAL SHEET "Goal Criteria" -> goal_distribution concept (mirrors SPP's
-# FIXED_GOAL_DISTRIBUTION / EVEN_GOAL_DISTRIBUTION treatment)
-FIXED_CRITERIA = {"Per Rep"}
-EVEN_CRITERIA  = {"Market Share", "Reverse MS"}
-NO_MIN_CRITERIA = FIXED_CRITERIA | EVEN_CRITERIA
 
 MONTH_NUM = {
     "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
@@ -220,6 +214,7 @@ def load_goal_sheet(xlsb_path):
         goal_criteria = spp.safe_str(gv("Goal Criteria"))
         premise = spp.safe_str(gv("Premise - On or Off Only")).upper()
         must_make = spp.safe_str(gv("Must Make"))
+        min_value = spp.safe_str(gv("Min"))
 
         raw_row = [gv(c) for c in GOAL_SHEET_COLUMNS]
 
@@ -319,6 +314,7 @@ def load_goal_sheet(xlsb_path):
             "pod_attribute":        pod_attribute,
             "premise":              premise,
             "must_make":            must_make,
+            "min_value":            min_value,
         })
 
     return records, skipped, unsold_warnings, anchor_year, anchor_month
@@ -391,7 +387,6 @@ def build_tracker_row(key, recs):
 
 def build_ptg_row(rec):
     is_dist = rec["goal_type"] in spp.POD_ATTR_TYPES
-    no_min  = rec["goal_criteria"] in NO_MIN_CRITERIA
     return {
         "goal_category":                  "PTG",
         "goal_name":                      rec["ptg_name"],
@@ -418,7 +413,7 @@ def build_ptg_row(rec):
         "min_objective_target":           "1",
         "distribution_level_path":        SOD_CONFIG["distribution_level_path"],
         "pod_attribute":                  (rec["pod_attribute"] or "ProductId") if is_dist else "",
-        "achievement_min":                "" if no_min else "1",
+        "achievement_min":                rec["min_value"] if is_dist else "",
     }
 
 
