@@ -19,13 +19,20 @@ open assumption.
 
 Open assumptions (confirm/adjust before relying on this in production):
   - "Reverse MS" (Goal of Unsold) is treated like "Market Share" (Unit Goal)
-    for distribution purposes (min_objective_target blank, distribution_target
-    = the "Goal" column value).
+    for distribution purposes.
   - basis_flag is always "TRUE" on the Tracker row (PTG rows leave it blank),
     matching how the SPP generator sets it — a constant, not derived from
     Goal Criteria.
-  - product_collection_id / achievement_min are left blank — no equivalent
-    source column has been identified yet in the GOAL SHEET.
+  - distribution_target comes from the "Goal Calculation" column (the
+    per-rep/per-unit figure), not "Goal" (the aggregate total) — "Goal" is
+    still read and required (a row with no Goal value is skipped) but only
+    used as a completeness check.
+  - min_objective_target is always "1" on the PTG row. achievement_min
+    carries the value the old min_objective_target logic used to produce:
+    blank for Fixed/Even-distribution Goal Criteria (Per Rep, Market Share,
+    Reverse MS), "1" otherwise.
+  - product_collection_id is left blank — no equivalent source column has
+    been identified yet in the GOAL SHEET.
   - Unsold End is always force-corrected to the month immediately before
     Tracking Start — the unsold/basis period must never overlap the
     tracking period, and submissions have been seen with Unsold End
@@ -291,6 +298,11 @@ def load_goal_sheet(xlsb_path):
             skipped.append({"row_num": excel_row, "reason": "no Goal value", "raw_row": raw_row})
             continue
 
+        goal_calc_raw = gv("Goal Calculation")
+        if isinstance(goal_calc_raw, float):
+            goal_calc_raw = round(goal_calc_raw, 4)
+        goal_calculation = spp._numeric_str(goal_calc_raw)
+
         records.append({
             "row_num":              excel_row,
             "division":             division,
@@ -304,6 +316,7 @@ def load_goal_sheet(xlsb_path):
             "ptg_name":             goal_name,
             "goal_criteria":        goal_criteria,
             "goal_value":           goal_value,
+            "goal_calculation":     goal_calculation,
             "pod_attribute":        pod_attribute,
             "premise":              premise,
             "must_make":            must_make,
@@ -402,11 +415,11 @@ def build_ptg_row(rec):
         "unsold_end_date":                "",
         "product_collection_id":          "",
         "customer_collection_id":         "",
-        "distribution_target":            rec["goal_value"],
-        "min_objective_target":           "" if no_min else "1",
+        "distribution_target":            rec["goal_calculation"],
+        "min_objective_target":           "1",
         "distribution_level_path":        SOD_CONFIG["distribution_level_path"],
         "pod_attribute":                  (rec["pod_attribute"] or "ProductId") if is_dist else "",
-        "achievement_min":                "",
+        "achievement_min":                "" if no_min else "1",
     }
 
 
