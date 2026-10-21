@@ -13,9 +13,8 @@ Usage:
 One Tracker is generated per unique (Division, goal_type, goal_uom,
 Tracking Start/End, unsold-period, Premise, Must Make) combination; every
 GOAL SHEET row under that combination becomes a PTG row. SOD goes into LPM
-as quotas, so program_class is the literal string "QUO" for every tracker
-(not an enum path like SPP's "ProgramClass.Site.Sppa") — confirmed, not an
-open assumption.
+as quotas, so program_class is the enum path "ProgramClass.Site.Quo" for
+every tracker, matching SPP's "ProgramClass.Site.Sppa" convention.
 
 Open assumptions (confirm/adjust before relying on this in production):
   - "Reverse MS" (Goal of Unsold) is treated like "Market Share" (Unit Goal)
@@ -65,7 +64,7 @@ import generate_lpm_upload as spp  # reuse CSV schema + helpers from the SPP gen
 CSV_COLUMNS = spp.CSV_COLUMNS
 
 SOD_CONFIG = {
-    "program_class":                  "QUO",
+    "program_class":                  "ProgramClass.Site.Quo",
     "score_by_td_linx_customer_code": "",
     "attainment_org_level":           "Salesperson",
     "recalculate_until_date":         "0",
