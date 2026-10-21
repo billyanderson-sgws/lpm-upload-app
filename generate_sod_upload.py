@@ -98,13 +98,13 @@ SOD_CONFIG = {
 # SPP, following SPP's own Anchor/Flex convention via the Must Make column.
 DIVISION_GROUPS = ("NYM", "NYU")
 
-# send_to_proof_date by (anchor_year, anchor_month) -> {division group: YYYYMMDD}.
+# send_to_proof_date by (anchor_year, anchor_month) -> {division group: MM/DD/YYYY}.
 # NYM and NYU follow different send-to-proof schedules some months and the
 # same date other months -- add each month here as it's confirmed; a month
 # with no entry here leaves send_to_proof_date blank rather than guessing.
 SEND_TO_PROOF_SCHEDULE = {
-    (2026, 11): {"NYM": "20261105", "NYU": "20261104"},
-    (2026, 12): {"NYM": "20261203", "NYU": "20261203"},
+    (2026, 11): {"NYM": "11/5/2026", "NYU": "11/4/2026"},
+    (2026, 12): {"NYM": "12/3/2026", "NYU": "12/3/2026"},
 }
 
 
