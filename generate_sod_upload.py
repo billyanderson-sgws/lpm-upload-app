@@ -52,9 +52,11 @@ Open assumptions (confirm/adjust before relying on this in production):
     Tracking Start — the unsold/basis period must never overlap the
     tracking period, and submissions have been seen with Unsold End
     mistakenly typed as the Tracking Start month. If Unsold Start itself is
-    on/after Tracking Start, the correction still applies but is called out
-    in unsold_warnings (not skipped) since it's a more significant source
-    error worth the state double-checking.
+    on/after Tracking Start (the whole window overlaps), Unsold Start is
+    also force-corrected to that same month-before value, collapsing it to
+    a single-month window alongside End — not skipped, but called out in
+    unsold_warnings since it's a more significant source error worth the
+    state double-checking.
 """
 
 import os
@@ -331,9 +333,11 @@ def load_goal_sheet(xlsb_path):
             # Start month instead, so it's always force-corrected here rather
             # than trusting what was typed. If Unsold Start itself is on/after
             # Tracking Start, the whole unsold window was entered as (or
-            # inside) the tracking period -- the correction still applies, but
-            # it's called out as a warning since it's a more significant
-            # source error worth the state double-checking.
+            # inside) the tracking period -- Start is force-corrected to the
+            # same month-before-Tracking-Start value as End (collapsing to a
+            # single-month window) rather than left overlapping, and it's
+            # called out as a warning since it's a more significant source
+            # error worth the state double-checking.
             expected_unsold_end = month_before(start_yyyymm)
             if unsold_start_yyyymm > expected_unsold_end:
                 unsold_warnings.append({
@@ -342,11 +346,12 @@ def load_goal_sheet(xlsb_path):
                         f"Unsold period matches/overlaps the Tracking period "
                         f"entirely: Unsold Start resolved to "
                         f"{unsold_start_yyyymm}, which is on or after Tracking "
-                        f"Start ({start_yyyymm}) -- Unsold End forced to "
-                        f"{expected_unsold_end}, verify at the source"
+                        f"Start ({start_yyyymm}) -- Unsold Start and End both "
+                        f"forced to {expected_unsold_end}, verify at the source"
                     ),
                     "raw_row": raw_row,
                 })
+                unsold_start_yyyymm = expected_unsold_end
             unsold_end_yyyymm = expected_unsold_end
 
         measure = spp.safe_str(gv("Measure Decimal/9L/STD"))
