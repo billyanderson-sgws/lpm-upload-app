@@ -20,7 +20,10 @@ open assumption.
 Open assumptions (confirm/adjust before relying on this in production):
   - "Reverse MS" (Goal of Unsold) is treated like "Market Share" (Unit Goal)
     for distribution purposes (min_objective_target blank, distribution_target
-    = the "Goal" column value) — only basis_flag differs (FALSE vs TRUE).
+    = the "Goal" column value).
+  - basis_flag is always "TRUE" on the Tracker row (PTG rows leave it blank),
+    matching how the SPP generator sets it — a constant, not derived from
+    Goal Criteria.
   - product_collection_id / achievement_min are left blank — no equivalent
     source column has been identified yet in the GOAL SHEET.
 """
@@ -95,9 +98,6 @@ UOM_MAP = {
 FIXED_CRITERIA = {"Per Rep"}
 EVEN_CRITERIA  = {"Market Share", "Reverse MS"}
 NO_MIN_CRITERIA = FIXED_CRITERIA | EVEN_CRITERIA
-
-# Goal Criteria that trigger basis_flag = TRUE
-BASIS_TRUE_CRITERIA = {"Market Share", "% Increase/Decrease"}
 
 MONTH_NUM = {
     "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
@@ -313,7 +313,7 @@ def build_tracker_row(key, recs):
         "goal_description":               "",
         "goal_start_date":                start,
         "goal_end_date":                  end,
-        "basis_flag":                     "",  # set per-PTG-group below; trackers hold the group's shared value
+        "basis_flag":                     "TRUE",
         "score_by_td_linx_customer_code": SOD_CONFIG["score_by_td_linx_customer_code"],
         "attainment_org_level":           SOD_CONFIG["attainment_org_level"],
         "goal_uom":                       goal_uom,
@@ -346,7 +346,7 @@ def build_ptg_row(rec):
         "goal_description":               "",
         "goal_start_date":                "",
         "goal_end_date":                  "",
-        "basis_flag":                     "TRUE" if rec["goal_criteria"] in BASIS_TRUE_CRITERIA else "FALSE",
+        "basis_flag":                     "",
         "score_by_td_linx_customer_code": "",
         "attainment_org_level":           "",
         "goal_uom":                       "",
