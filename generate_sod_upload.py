@@ -26,6 +26,13 @@ Open assumptions (confirm/adjust before relying on this in production):
     Goal Criteria.
   - product_collection_id / achievement_min are left blank — no equivalent
     source column has been identified yet in the GOAL SHEET.
+  - Unsold End is always force-corrected to the month immediately before
+    Tracking Start — the unsold/basis period must never overlap the
+    tracking period, and submissions have been seen with Unsold End
+    mistakenly typed as the Tracking Start month. If Unsold Start itself is
+    on/after Tracking Start, the correction still applies but is called out
+    in unsold_warnings (not skipped) since it's a more significant source
+    error worth the state double-checking.
 """
 
 import os
@@ -176,8 +183,8 @@ def month_before(yyyymm):
 
 def load_goal_sheet(xlsb_path):
     """
-    Read the GOAL SHEET table and return (records, skipped_rows, anchor_year,
-    anchor_month).
+    Read the GOAL SHEET table and return (records, skipped_rows,
+    unsold_warnings, anchor_year, anchor_month).
     """
     import pandas as pd
 
@@ -190,6 +197,7 @@ def load_goal_sheet(xlsb_path):
 
     records = []
     skipped = []
+    unsold_warnings = []
 
     for i, row in df.iterrows():
         excel_row = i + 6  # header on sheet row 5 (1-indexed); data starts row 6
@@ -245,19 +253,29 @@ def load_goal_sheet(xlsb_path):
             # The unsold/basis period is the comparison window used to judge
             # "new" distribution and must never overlap the tracking period --
             # it has to end the month immediately before Tracking Start (e.g.
-            # a Sep-Oct tracker's unsold period must end in August).
+            # a Sep-Oct tracker's unsold period must end in August). The GOAL
+            # SHEET sometimes has Unsold End mistakenly typed as the Tracking
+            # Start month instead, so it's always force-corrected here rather
+            # than trusting what was typed. If Unsold Start itself is on/after
+            # Tracking Start, the whole unsold window was entered as (or
+            # inside) the tracking period -- the correction still applies, but
+            # it's called out as a warning since it's a more significant
+            # source error worth the state double-checking.
             expected_unsold_end = month_before(start_yyyymm)
-            if unsold_end_yyyymm != expected_unsold_end:
-                skipped.append({
+            if unsold_start_yyyymm > expected_unsold_end:
+                unsold_warnings.append({
                     "row_num": excel_row,
                     "reason": (
-                        f"Unsold/basis period overlaps or doesn't end the month "
-                        f"prior to Tracking Start: Unsold End resolved to "
-                        f"{unsold_end_yyyymm}, expected {expected_unsold_end}"
+                        f"Unsold period matches/overlaps the Tracking period "
+                        f"entirely: Unsold Start resolved to "
+                        f"{unsold_start_yyyymm}, which is on or after Tracking "
+                        f"Start ({start_yyyymm}) -- Unsold End forced to "
+                        f"{expected_unsold_end}, verify at the source"
                     ),
                     "raw_row": raw_row,
                 })
-                continue
+            unsold_end_yyyymm = expected_unsold_end
+            unsold_end_yyyymm = expected_unsold_end
 
         measure = spp.safe_str(gv("Measure Decimal/9L/STD"))
         if goal_type in {"VolumeRevenueDREV"}:
@@ -291,7 +309,7 @@ def load_goal_sheet(xlsb_path):
             "must_make":            must_make,
         })
 
-    return records, skipped, anchor_year, anchor_month
+    return records, skipped, unsold_warnings, anchor_year, anchor_month
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +493,7 @@ def main():
         print("No collection report found — salesforce_collection_ids will be blank.")
 
     print(f"Reading: {input_path}")
-    records, skipped, anchor_year, anchor_month = load_goal_sheet(input_path)
+    records, skipped, unsold_warnings, anchor_year, anchor_month = load_goal_sheet(input_path)
     print(f"Anchor: year={anchor_year} month={anchor_month}")
 
     if not records:
@@ -506,6 +524,10 @@ def main():
         print(f"\n*** {len(duplicate_names)} Goal Name(s) repeat within the same Tracker — LPM may treat them as one on import ***")
         for d in duplicate_names:
             print(f"  Tracker '{d['tracker']}' | Goal Name '{d['ptg_name']}' | source rows: {d['row_nums']}")
+    if unsold_warnings:
+        print(f"\n*** {len(unsold_warnings)} row(s) had an Unsold period overlapping Tracking Start — Unsold End was auto-corrected, verify at the source ***")
+        for w in unsold_warnings:
+            print(f"  row {w['row_num']}: {w['reason']}")
     print("=" * 65)
 
 

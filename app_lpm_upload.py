@@ -83,25 +83,31 @@ def extract_sam_goal_groups(xlsx_bytes):
         os.unlink(tmp)
 
 
-def extract_sod_divisions(xlsb_bytes):
-    """Return unique non-blank divisions from the GOAL SHEET, in order."""
-    import pandas as pd
+def load_sod_goal_sheet(xlsb_bytes):
+    """
+    Parse the GOAL SHEET once via sodgen.load_goal_sheet and return
+    (records, skipped, unsold_warnings, anchor_year, anchor_month). Reused
+    for both the Collection ID Mapping UI and CSV generation so the (large)
+    .xlsb is only ever parsed a single time per upload.
+    """
     with tempfile.NamedTemporaryFile(suffix=".xlsb", delete=False) as f:
         f.write(xlsb_bytes)
         tmp = f.name
     try:
-        df = pd.read_excel(tmp, sheet_name="GOAL SHEET", engine="pyxlsb", header=4)
-        divisions, seen = [], set()
-        for v in df.get("Division", []):
-            if v is None or (isinstance(v, float) and pd.isna(v)):
-                continue
-            d = sodgen.spp.safe_str(v)
-            if d and d not in seen:
-                seen.add(d)
-                divisions.append(d)
-        return divisions
+        return sodgen.load_goal_sheet(tmp)
     finally:
         os.unlink(tmp)
+
+
+def sod_divisions_from_records(records):
+    """Return unique non-blank divisions from parsed GOAL SHEET records, in order."""
+    divisions, seen = [], set()
+    for rec in records:
+        d = rec["division"]
+        if d and d not in seen:
+            seen.add(d)
+            divisions.append(d)
+    return divisions
 
 
 def get_state_collections(state, source):
@@ -778,7 +784,7 @@ def render_sod_tab():
 
     if sod_file and sod_file.name != st.session_state.sod_last_file_name:
         st.session_state.sod_last_file_name = sod_file.name
-        st.session_state.sod_divisions      = None
+        st.session_state.sod_loaded         = None
         st.session_state.sod_manual_mapping = {}
         st.session_state.sod_result         = None
 
@@ -796,11 +802,12 @@ def render_sod_tab():
         collections = get_state_collections("NY", coll_source) if coll_source else {}
         st.caption(f"Collection report: {coll_source_label}")
 
-        if st.session_state.get("sod_divisions") is None:
+        if st.session_state.get("sod_loaded") is None:
             with st.spinner("Reading GOAL SHEET…"):
-                st.session_state.sod_divisions = extract_sod_divisions(sod_file.getvalue())
+                st.session_state.sod_loaded = load_sod_goal_sheet(sod_file.getvalue())
 
-        divisions = st.session_state.sod_divisions
+        sod_records, sod_skipped, sod_unsold_warnings, sod_anchor_year, sod_anchor_month = st.session_state.sod_loaded
+        divisions = sod_divisions_from_records(sod_records)
 
         if divisions and collections:
             with st.expander("Collection ID Mapping", expanded=True):
@@ -853,16 +860,12 @@ def render_sod_tab():
         with st.spinner("Processing GOAL SHEET…"):
             try:
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    sod_path = os.path.join(tmpdir, sod_file.name)
-                    with open(sod_path, "wb") as f:
-                        f.write(sod_file.getvalue())
-
                     output_path  = os.path.join(tmpdir, "sod_upload.csv")
                     skipped_path = os.path.join(tmpdir, "sod_skipped.csv")
 
                     sodgen.spp.COLLECTION_LOOKUP = st.session_state.get("sod_manual_mapping", {})
 
-                    records, skipped, anchor_year, anchor_month = sodgen.load_goal_sheet(sod_path)
+                    records, skipped, unsold_warnings, anchor_year, anchor_month = st.session_state.sod_loaded
                     if not records:
                         raise ValueError("No valid records found in the GOAL SHEET after filtering.")
 
@@ -894,6 +897,7 @@ def render_sod_tab():
                     "total_ptgs":      total_ptgs,
                     "skipped":         skipped,
                     "duplicate_names": duplicate_names,
+                    "unsold_warnings": unsold_warnings,
                     "output_bytes":    output_bytes,
                     "skipped_bytes":   skipped_bytes,
                     "base_name":       os.path.splitext(sod_file.name)[0],
@@ -946,6 +950,15 @@ def render_sod_tab():
                         st.markdown(
                             f"Tracker `{d['tracker']}` · Goal Name `{d['ptg_name']}` · source rows: {d['row_nums']}"
                         )
+
+            if result.get("unsold_warnings"):
+                st.warning(
+                    f"⚠️ {len(result['unsold_warnings'])} row(s) had an Unsold period overlapping "
+                    "Tracking Start — Unsold End was auto-corrected, verify at the source."
+                )
+                with st.expander("View corrected Unsold periods"):
+                    for w in result["unsold_warnings"]:
+                        st.markdown(f"**Row {w['row_num']}** &nbsp;·&nbsp; {w['reason']}")
 
             st.divider()
 
