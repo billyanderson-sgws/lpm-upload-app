@@ -61,7 +61,7 @@ SOD_CONFIG = {
     "program_class":                  "QUO",
     "score_by_td_linx_customer_code": "",
     "attainment_org_level":           "Salesperson",
-    "recalculate_until_date":         "365",
+    "recalculate_until_date":         "0",
     "exclude_from_os_sales_reports":  "FALSE",
     "salesforce_collection_ids":      "",
     "send_to_proof":                  "SendStartingInActive",
