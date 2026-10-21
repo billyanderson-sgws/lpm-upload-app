@@ -28,8 +28,9 @@ Open assumptions (confirm/adjust before relying on this in production):
     used as a completeness check.
   - min_objective_target is always "1" on the PTG row. achievement_min is
     only populated for distribution objectives (goal_type in
-    spp.POD_ATTR_TYPES) and brings across the raw "Min" column value
-    as-is (e.g. "3 btl", "1 cs") — blank for non-distro objectives.
+    spp.POD_ATTR_TYPES) and carries just the numeric value from the "Min"
+    column with its unit suffix/whitespace stripped (e.g. "3 btl" -> "3")
+    — blank for non-distro objectives.
   - product_collection_id is left blank — no equivalent source column has
     been identified yet in the GOAL SHEET.
   - Unsold End is always force-corrected to the month immediately before
@@ -169,6 +170,17 @@ def safe_month(abbr):
     return MONTH_NUM.get(str(abbr).strip().upper())
 
 
+def strip_unit(value):
+    """
+    Pull just the leading numeric value out of a "Min" cell like "3 btl" or
+    "1 cs" -- unit suffix and surrounding whitespace dropped, e.g. "3 btl" -> "3".
+    """
+    if not value:
+        return ""
+    m = re.match(r"\s*(-?\d+(?:\.\d+)?)", str(value))
+    return m.group(1) if m else str(value).strip()
+
+
 def month_before(yyyymm):
     """Return the YYYYMM immediately preceding the given YYYYMM."""
     year, month = int(yyyymm[:4]), int(yyyymm[4:6])
@@ -214,7 +226,7 @@ def load_goal_sheet(xlsb_path):
         goal_criteria = spp.safe_str(gv("Goal Criteria"))
         premise = spp.safe_str(gv("Premise - On or Off Only")).upper()
         must_make = spp.safe_str(gv("Must Make"))
-        min_value = spp.safe_str(gv("Min"))
+        min_value = strip_unit(gv("Min"))
 
         raw_row = [gv(c) for c in GOAL_SHEET_COLUMNS]
 
