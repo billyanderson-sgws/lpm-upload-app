@@ -454,7 +454,7 @@ def build_tracker_row(key, recs, anchor_year=None, anchor_month=None):
         "salesforce_collection_ids":      spp.COLLECTION_LOOKUP.get(division.lower(), SOD_CONFIG["salesforce_collection_ids"]),
         "program_class":                  program_class,
         "send_to_proof":                  SOD_CONFIG["send_to_proof"],
-        "send_to_proof_date":             send_to_proof_date,
+        "send_to_proof_date":             spp.to_yyyymmdd(send_to_proof_date),
         "unsold_start_date":              unsold_start,
         "unsold_end_date":                unsold_end,
         "product_collection_id":          "",

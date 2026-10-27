@@ -168,6 +168,25 @@ def to_yyyymm(value):
     return s
 
 
+def to_yyyymmdd(value):
+    """Convert a cell value (datetime, int/str YYYYMMDD, or date string) to a YYYYMMDD string."""
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.strftime("%Y%m%d")
+    s = str(value).strip()
+    if not s:
+        return ""
+    if len(s) == 8 and s.isdigit():
+        return s
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y%m%d")
+        except ValueError:
+            pass
+    return s
+
+
 def _yyyymm_subtract_months(yyyymm, months):
     """Return YYYYMM shifted back by the given number of whole months."""
     year  = int(yyyymm[:4])
@@ -842,7 +861,7 @@ def build_tracker_row(key, recs):
         "salesforce_collection_ids":      COLLECTION_LOOKUP.get(goal_group.lower(), CONFIG["salesforce_collection_ids"]),
         "program_class":                  program_class,
         "send_to_proof":                  CONFIG["send_to_proof"],
-        "send_to_proof_date":             CONFIG["send_to_proof_date"],
+        "send_to_proof_date":             to_yyyymmdd(CONFIG["send_to_proof_date"]),
         "unsold_start_date":              unsold_start,
         "unsold_end_date":                unsold_end,
         "product_collection_id":          "",
