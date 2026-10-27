@@ -303,11 +303,12 @@ def main():
     order, groups = spp.group_records(records)
     total_trackers, total_ptgs = spp.generate_output(order, groups, output_path)
     duplicate_names = spp.find_duplicate_ptg_names(order, groups)
+    anchor_flex_issues = spp.find_anchor_flex_issues(records)
 
     if skipped:
         spp.write_skipped_csv(skipped_path, skipped, header_row)
 
-    spp.print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names)
+    spp.print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names, anchor_flex_issues)
 
 
 if __name__ == "__main__":

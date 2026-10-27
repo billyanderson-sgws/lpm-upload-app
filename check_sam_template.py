@@ -116,6 +116,10 @@ def make_flag(row_num, severity, category, message):
 # carry a VSTACK sheet at all -- in that case this check simply never fires.
 LEVELS_IN_VSTACK = {"Supplier", "Group", "SubGroup", "Super Group", "Items(s)", "Brand"}
 
+# Valid (Anchor, Flex) count combos for a Goal Group (tracker) -- all 2:1,
+# but only at these specific totals, not any 2:1 split.
+ANCHOR_FLEX_ALLOWED = {(6, 3), (10, 5), (20, 10), (40, 20)}
+
 
 def _build_vstack_index(wb):
     """
@@ -225,7 +229,11 @@ def check_tracking_table(wb_path):
 
         row_count += 1
 
-        # --- Anchor/Flex tally (2:1 ratio check, below) ----------------------
+        # --- Anchor/Flex tally (ratio check, below) ---------------------------
+        # Only Anchor/Flex tiers count toward the ratio. "Quota" goals don't
+        # follow the Anchor/Flex rules at all, and "MySales" goals are an
+        # optional extra on top of the Anchor/Flex combo (not every market
+        # has one) -- both are intentionally excluded here, not just missed.
         if spp_tier in ("Anchor", "Flex"):
             counts = tier_counts.setdefault(goal_group or "(no Goal Group)", {"Anchor": 0, "Flex": 0})
             counts[spp_tier] += 1
@@ -394,20 +402,19 @@ def check_tracking_table(wb_path):
                 "Objective Type is blank — this row will be skipped as unrecognized."
             ))
 
-    # --- Anchor/Flex 2:1 ratio, per Goal Group (tracker) --------------------
+    # --- Anchor/Flex ratio, per Goal Group (tracker) ------------------------
+    # Only these exact (Anchor, Flex) combos are valid -- not any 2:1 split.
     for goal_group, counts in tier_counts.items():
         anchor_n, flex_n = counts["Anchor"], counts["Flex"]
         total = anchor_n + flex_n
         if total == 0:
             continue
-        expected_anchor = round(total * 2 / 3)
-        expected_flex = total - expected_anchor
-        if (anchor_n, flex_n) != (expected_anchor, expected_flex):
+        if (anchor_n, flex_n) not in ANCHOR_FLEX_ALLOWED:
+            allowed_str = " / ".join(f"{a} Anchor / {f} Flex" for a, f in sorted(ANCHOR_FLEX_ALLOWED))
             flags.append(make_flag(
                 None, "warning", "anchor_flex_ratio",
-                f"'{goal_group}': {total} goal(s) should split 2:1 Anchor/Flex "
-                f"({expected_anchor} Anchor / {expected_flex} Flex), but found "
-                f"{anchor_n} Anchor / {flex_n} Flex."
+                f"'{goal_group}': found {anchor_n} Anchor / {flex_n} Flex ({total} goal(s)), "
+                f"which doesn't match any allowed Anchor/Flex combo ({allowed_str})."
             ))
 
     # --- File-level: inconsistent end dates ---------------------------------

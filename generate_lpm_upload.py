@@ -75,6 +75,13 @@ DISTRIBUTION_TYPES = {
     "DistributionReorder",
 }
 
+# Valid (Anchor, Flex) count combos for a Goal Group (tracker) -- all 2:1,
+# but only at these specific totals, not any 2:1 split. "Quota" goals don't
+# follow the Anchor/Flex rules at all, and "MySales" goals are an optional
+# extra on top of the combo (not every market has one) -- both are excluded
+# by construction below, since only rows tiered exactly "Anchor"/"Flex" count.
+ANCHOR_FLEX_ALLOWED = {(6, 3), (10, 5), (20, 10), (40, 20)}
+
 VOLUME_TYPES = {
     "VolumeCases", "VolumeRevenue", "VolumeRevenueDREV",
     "VolumeGP", "VolumeCombos", "VolumePoints",
@@ -915,6 +922,32 @@ def find_duplicate_ptg_names(order, groups):
     return dupes
 
 
+def find_anchor_flex_issues(records):
+    """
+    Tally Anchor/Flex goals per Goal Group and flag any whose (Anchor, Flex)
+    counts don't match one of ANCHOR_FLEX_ALLOWED. Quota goals don't follow
+    the Anchor/Flex rules at all, and MySales goals are an optional extra on
+    top of the combo -- both are excluded by only tallying rows whose
+    spp_tier is exactly "Anchor" or "Flex".
+
+    Returns a list of {"goal_group": ..., "anchor": n, "flex": n}.
+    """
+    tier_counts = {}
+    for rec in records:
+        if rec["spp_tier"] in ("Anchor", "Flex"):
+            counts = tier_counts.setdefault(rec["goal_group"] or "(no Goal Group)", {"Anchor": 0, "Flex": 0})
+            counts[rec["spp_tier"]] += 1
+
+    issues = []
+    for goal_group, counts in tier_counts.items():
+        anchor_n, flex_n = counts["Anchor"], counts["Flex"]
+        if anchor_n + flex_n == 0:
+            continue
+        if (anchor_n, flex_n) not in ANCHOR_FLEX_ALLOWED:
+            issues.append({"goal_group": goal_group, "anchor": anchor_n, "flex": flex_n})
+    return issues
+
+
 def generate_output(order, groups, output_path):
     total_trackers = 0
     total_ptgs = 0
@@ -949,7 +982,7 @@ def write_skipped_csv(skipped_path, skipped, header_row):
             writer.writerow([entry["reason"]] + entry["raw_row"])
 
 
-def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names=None):
+def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names=None, anchor_flex_issues=None):
     print()
     print("=" * 65)
     print("LPM Upload Generation Summary")
@@ -971,6 +1004,11 @@ def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped
         print(f"\n*** {len(duplicate_names)} PTG name(s) repeat within the same Tracker — LPM may treat them as one on import ***")
         for d in duplicate_names:
             print(f"  Tracker '{d['tracker']}' | PTG '{d['ptg_name']}' | source rows: {d['row_nums']}")
+    if anchor_flex_issues:
+        allowed_str = " / ".join(f"{a} Anchor / {f} Flex" for a, f in sorted(ANCHOR_FLEX_ALLOWED))
+        print(f"\n*** {len(anchor_flex_issues)} Goal Group(s) have an Anchor/Flex combo that doesn't match any allowed split ({allowed_str}) ***")
+        for issue in anchor_flex_issues:
+            print(f"  '{issue['goal_group']}': {issue['anchor']} Anchor / {issue['flex']} Flex")
     print("=" * 65)
 
 
@@ -1067,11 +1105,12 @@ def main():
     order, groups = group_records(records)
     total_trackers, total_ptgs = generate_output(order, groups, output_path)
     duplicate_names = find_duplicate_ptg_names(order, groups)
+    anchor_flex_issues = find_anchor_flex_issues(records)
 
     if skipped:
         write_skipped_csv(skipped_path, skipped, header_row)
 
-    print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names)
+    print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names, anchor_flex_issues)
 
 
 if __name__ == "__main__":

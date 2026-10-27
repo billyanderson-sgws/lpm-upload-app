@@ -403,6 +403,7 @@ def render_spp_tab():
                     order, groups = gen.group_records(records)
                     total_trackers, total_ptgs = gen.generate_output(order, groups, output_path)
                     duplicate_names = gen.find_duplicate_ptg_names(order, groups)
+                    anchor_flex_issues = gen.find_anchor_flex_issues(records)
 
                     if skipped:
                         gen.write_skipped_csv(skipped_path, skipped, header_row)
@@ -427,6 +428,7 @@ def render_spp_tab():
                     "total_ptgs":       total_ptgs,
                     "skipped":          skipped,
                     "duplicate_names":  duplicate_names,
+                    "anchor_flex_issues": anchor_flex_issues,
                     "output_bytes":     output_bytes,
                     "skipped_bytes":    skipped_bytes,
                     "base_name":        os.path.splitext(goal_builder_file.name)[0],
@@ -481,6 +483,16 @@ def render_spp_tab():
                         st.markdown(
                             f"Tracker `{d['tracker']}` · PTG `{d['ptg_name']}` · source rows: {d['row_nums']}"
                         )
+
+            if result.get("anchor_flex_issues"):
+                allowed_str = " / ".join(f"{a} Anchor / {f} Flex" for a, f in sorted(gen.ANCHOR_FLEX_ALLOWED))
+                st.warning(
+                    f"⚠️ {len(result['anchor_flex_issues'])} Goal Group(s) have an Anchor/Flex combo "
+                    f"that doesn't match any allowed split ({allowed_str})."
+                )
+                with st.expander("View Anchor/Flex issues"):
+                    for issue in result["anchor_flex_issues"]:
+                        st.markdown(f"`{issue['goal_group']}`: {issue['anchor']} Anchor / {issue['flex']} Flex")
 
             st.divider()
 
@@ -655,6 +667,7 @@ def render_sam_spp_tab():
                     order, groups = samgen.spp.group_records(records)
                     total_trackers, total_ptgs = samgen.spp.generate_output(order, groups, output_path)
                     duplicate_names = samgen.spp.find_duplicate_ptg_names(order, groups)
+                    anchor_flex_issues = samgen.spp.find_anchor_flex_issues(records)
 
                     if skipped:
                         samgen.spp.write_skipped_csv(skipped_path, skipped, header_row)
@@ -679,6 +692,7 @@ def render_sam_spp_tab():
                     "total_ptgs":       total_ptgs,
                     "skipped":          skipped,
                     "duplicate_names":  duplicate_names,
+                    "anchor_flex_issues": anchor_flex_issues,
                     "output_bytes":     output_bytes,
                     "skipped_bytes":    skipped_bytes,
                     "base_name":        os.path.splitext(sam_file.name)[0],
@@ -733,6 +747,16 @@ def render_sam_spp_tab():
                         st.markdown(
                             f"Tracker `{d['tracker']}` · PTG `{d['ptg_name']}` · source rows: {d['row_nums']}"
                         )
+
+            if result.get("anchor_flex_issues"):
+                allowed_str = " / ".join(f"{a} Anchor / {f} Flex" for a, f in sorted(gen.ANCHOR_FLEX_ALLOWED))
+                st.warning(
+                    f"⚠️ {len(result['anchor_flex_issues'])} Goal Group(s) have an Anchor/Flex combo "
+                    f"that doesn't match any allowed split ({allowed_str})."
+                )
+                with st.expander("View Anchor/Flex issues"):
+                    for issue in result["anchor_flex_issues"]:
+                        st.markdown(f"`{issue['goal_group']}`: {issue['anchor']} Anchor / {issue['flex']} Flex")
 
             st.divider()
 
