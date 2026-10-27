@@ -21,6 +21,7 @@ import generate_ca_quota_upload as cagen
 import generate_sam_spp_upload as samgen
 import ny_sod_revision_recap as recap
 import check_spp_template as checker
+import check_sam_template as sam_checker
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -1401,6 +1402,104 @@ def render_checker_tab():
 
 
 # ---------------------------------------------------------------------------
+# Tab 5: SAM Template Checker
+# ---------------------------------------------------------------------------
+
+def render_sam_checker_tab():
+    st.subheader("SAM Template Checker")
+    st.caption(
+        "Upload a CR SAM NextGen Goal File `.xlsx` and scan its SPP Export sheet "
+        "for data-entry problems — missing/blank end dates, duplicated or "
+        "concatenated text, non-numeric goals, header/column changes, "
+        "unrecognized Distribution Qualifier units, silent skips, and Anchor/Flex "
+        "ratio imbalance. Results can be exported as a CSV report. This never "
+        "generates an LPM upload CSV and never blocks anything downstream — it's "
+        "a heads-up before you run the CR SAM SPP Generator."
+    )
+
+    sam_check_file = st.file_uploader(
+        "CR SAM NextGen Goal File (.xlsx)",
+        type=["xlsx"],
+        key="sam_checker_goal_file",
+    )
+
+    sam_check_clicked = st.button(
+        "Check Template",
+        type="primary",
+        disabled=(sam_check_file is None),
+        use_container_width=True,
+        key="sam_checker_run_button",
+    )
+
+    if sam_check_clicked and sam_check_file is not None:
+        with st.spinner("Scanning SPP Export…"):
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    sam_path = os.path.join(tmpdir, sam_check_file.name)
+                    with open(sam_path, "wb") as f:
+                        f.write(sam_check_file.getvalue())
+                    flags, header_issues, row_count = sam_checker.check_tracking_table(sam_path)
+
+                    report_path = os.path.join(tmpdir, "report.csv")
+                    sam_checker.write_report_csv(report_path, flags, header_issues, sam_check_file.name)
+                    with open(report_path, "rb") as f:
+                        report_bytes = f.read()
+
+                st.session_state.sam_checker_result = {
+                    "error": None,
+                    "flags": flags,
+                    "header_issues": header_issues,
+                    "row_count": row_count,
+                    "report_bytes": report_bytes,
+                    "base_name": os.path.splitext(sam_check_file.name)[0],
+                }
+            except Exception as exc:
+                st.session_state.sam_checker_result = {"error": str(exc)}
+
+    result = st.session_state.get("sam_checker_result")
+
+    if result:
+        st.divider()
+
+        if result.get("error"):
+            st.error(f"**Error:** {result['error']}")
+        else:
+            st.caption(f"Checked {result['row_count']} row(s).")
+
+            if result["header_issues"]:
+                st.error(f"🛑 {len(result['header_issues'])} header/column issue(s) — the template structure itself has changed.")
+                with st.expander("View header issues", expanded=True):
+                    for issue in result["header_issues"]:
+                        st.markdown(f"- {issue}")
+
+            flags = result["flags"]
+            warnings = [f for f in flags if f["severity"] == "warning"]
+            infos = [f for f in flags if f["severity"] == "info"]
+
+            c1, c2 = st.columns(2)
+            c1.metric("Warnings", len(warnings))
+            c2.metric("Informational", len(infos))
+
+            if result.get("report_bytes"):
+                st.download_button(
+                    label="⬇️  Download Report CSV",
+                    data=result["report_bytes"],
+                    file_name=f"{result['base_name']}_template_check.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="sam_checker_download_report",
+                )
+
+            if not flags and not result["header_issues"]:
+                st.success("✅ No issues found.")
+            else:
+                for f in warnings + infos:
+                    where = f"Row {f['row_num']}" if f["row_num"] else "File-level"
+                    icon = _SEVERITY_ICON.get(f["severity"], "")
+                    st.markdown(f"{icon} **{where}** · `{f['category']}` — {f['message']}")
+
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
@@ -1408,13 +1507,14 @@ with st.sidebar:
         st.image(str(CI_LOGO), use_container_width=True)
     st.header("LPM Upload Generator")
     st.markdown("""
-Six tools, one app:
+Seven tools, one app:
 - **SPP Generator** — SPP Goal Builder `.xlsm` → LPM upload CSV
 - **CR SAM SPP Generator** — CR SAM NextGen Goal File `.xlsx` (SPP Export sheet) → LPM upload CSV
 - **NY Uploader** — NY Monthly Quota Planner `.xlsb` (NYM Quota + NYU SPP) → LPM upload CSV
 - **CA Union Quota Generator** — CA Quota Input Form `.xlsb` → LPM upload CSV
 - **NY SOD Revision Recap** — diff an INPUT vs FINAL NY SOD file
 - **SPP Template Checker** — scan a Goal Builder for data-entry problems before generating
+- **SAM Template Checker** — scan a CR SAM NextGen Goal File for data-entry problems before generating
 
 The **LPM Collection Report** is bundled automatically for all generators.
 """)
@@ -1426,8 +1526,8 @@ The **LPM Collection Report** is bundled automatically for all generators.
 # ---------------------------------------------------------------------------
 st.title("LPM Upload Generator")
 
-tab_spp, tab_sam, tab_sod, tab_ca, tab_recap, tab_checker = st.tabs(
-    ["SPP Generator", "CR SAM SPP Generator", "NY Uploader", "CA Union Quota Generator", "NY SOD Revision Recap", "SPP Template Checker"]
+tab_spp, tab_sam, tab_sod, tab_ca, tab_recap, tab_checker, tab_sam_checker = st.tabs(
+    ["SPP Generator", "CR SAM SPP Generator", "NY Uploader", "CA Union Quota Generator", "NY SOD Revision Recap", "SPP Template Checker", "SAM Template Checker"]
 )
 
 with tab_spp:
@@ -1447,3 +1547,6 @@ with tab_checker:
 
 with tab_recap:
     render_recap_tab()
+
+with tab_sam_checker:
+    render_sam_checker_tab()
