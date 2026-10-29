@@ -38,9 +38,9 @@ Open assumptions (confirm/adjust before relying on this in production):
     matching how the SPP generator sets it — a constant, not derived from
     Goal Criteria.
   - distribution_target comes from the "Goal Calculation" column (the
-    per-rep/per-unit figure), not "Goal" (the aggregate total) — "Goal" is
-    still read and required (a row with no Goal value is skipped) but only
-    used as a completeness check.
+    per-rep/per-unit figure), not "Goal" (the aggregate total). "Goal
+    Calculation" is also the required completeness check — a row with no
+    Goal Calculation value is skipped. The "Goal" column is not read.
   - min_objective_target is always "1" on the PTG row. achievement_min is
     only populated for distribution objectives (goal_type in
     spp.POD_ATTR_TYPES) and carries just the numeric value from the "Min"
@@ -137,6 +137,12 @@ POD_TYPE_ATTR_MAP = {
     "PODs by Type": "PhSubGroup",
     "PODs by Size": "ProductSize",
 }
+
+def _norm_goal_type(s):
+    return s.strip().lower()
+
+GOAL_TYPE_MAP_NORM = {_norm_goal_type(k): v for k, v in GOAL_TYPE_MAP.items()}
+POD_TYPE_ATTR_MAP_NORM = {_norm_goal_type(k): v for k, v in POD_TYPE_ATTR_MAP.items()}
 
 # Only these support New-period coercion when an unsold window is present
 UNSOLD_ELIGIBLE = {"DistributionACS", "DistributionPODs"}
@@ -296,7 +302,7 @@ def load_goal_sheet(xlsb_path):
             })
             continue
 
-        goal_type = GOAL_TYPE_MAP.get(goal_type_raw)
+        goal_type = GOAL_TYPE_MAP_NORM.get(_norm_goal_type(goal_type_raw))
         if not goal_type:
             skipped.append({"row_num": excel_row, "reason": f"unknown Goal Type: {goal_type_raw!r}", "raw_row": raw_row})
             continue
@@ -308,7 +314,7 @@ def load_goal_sheet(xlsb_path):
         if unsold_present and goal_type in UNSOLD_ELIGIBLE:
             goal_type = UNSOLD_COERCION[goal_type]
 
-        pod_attribute = POD_TYPE_ATTR_MAP.get(goal_type_raw, "")
+        pod_attribute = POD_TYPE_ATTR_MAP_NORM.get(_norm_goal_type(goal_type_raw), "")
 
         tracking_start_raw = gv("Tracking Start")
         tracking_end_raw   = gv("Tracking End")
@@ -360,18 +366,15 @@ def load_goal_sheet(xlsb_path):
         else:
             goal_uom = UOM_MAP.get(measure, "Cases" if goal_type in spp.DISTRIBUTION_TYPES else "")
 
-        goal_value_raw = gv("Goal")
-        if isinstance(goal_value_raw, float):
-            goal_value_raw = round(goal_value_raw, 4)
-        goal_value = spp._numeric_str(goal_value_raw)
-        if not goal_value:
-            skipped.append({"row_num": excel_row, "reason": "no Goal value", "raw_row": raw_row})
-            continue
-
         goal_calc_raw = gv("Goal Calculation")
         if isinstance(goal_calc_raw, float):
             goal_calc_raw = round(goal_calc_raw, 4)
         goal_calculation = spp._numeric_str(goal_calc_raw)
+        if not goal_calculation:
+            skipped.append({"row_num": excel_row, "reason": "no Goal Calculation value", "raw_row": raw_row})
+            continue
+
+        goal_value = goal_calculation
 
         records.append({
             "row_num":              excel_row,
