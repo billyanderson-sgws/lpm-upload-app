@@ -30,6 +30,16 @@ differently end to end:
     SPP's "SendStartingInActive") and resolve send_to_proof_date from
     SEND_TO_PROOF_SCHEDULE, keyed by (anchor_year, anchor_month) -> group.
     A month with no schedule entry leaves send_to_proof_date blank.
+  - "GSC" (Go Spot Check) is NY's SET alternative that lives outside LPM —
+    reps manually update tracking, so NY builds a "dummy" ACS tracker in LPM
+    just to hold the goal. A GSC row maps to the same DistributionACS
+    goal_type as a normal ACS row, but: the tracking period is forced to a
+    single month matching the file's close month (the Tracking Start/End
+    columns are ignored), the Tracker's goal_name gets a " (GSC)" suffix,
+    and the PTG's achievement_min is forced to "1" (a 1-bottle qualifier)
+    regardless of goal_type. Everything else — PTG naming, distribution_target
+    from Goal Calculation, etc. — follows normal ACS rules. GSC rows never
+    group into the same Tracker as a real ACS row (see group_key's is_gsc).
 
 Open assumptions (confirm/adjust before relying on this in production):
   - "Reverse MS" (Goal of Unsold) is treated like "Market Share" (Unit Goal)
@@ -122,14 +132,23 @@ def send_to_proof_date_for(anchor_year, anchor_month, group):
     return sched.get(group, "") if sched else ""
 
 # GOAL SHEET "Goal Type" -> LPM goal_type (before unsold-period coercion)
+# "GSC" (Go Spot Check) is NY's SET alternative that lives outside LPM --
+# these are "dummy" ACS goals tracked manually, so they map onto the same
+# DistributionACS path as a normal ACS row. GSC_GOAL_TYPES below flags which
+# raw values additionally get the GSC-only treatment (single-month tracking
+# period forced to the close month, " (GSC)" tracker-name suffix, forced
+# 1-bottle achievement_min) -- see is_gsc handling in load_goal_sheet.
 GOAL_TYPE_MAP = {
     "Volume":        "VolumeCases",
     "DREV":          "VolumeRevenueDREV",
     "ACS":           "DistributionACS",
+    "GSC":           "DistributionACS",
     "PODs by SKU":   "DistributionPODs",
     "PODs by Type":  "DistributionPODs",
     "PODs by Size":  "DistributionPODs",
 }
+
+GSC_GOAL_TYPES = {"gsc"}  # normalized (lowercase/stripped) raw Goal Type values treated as GSC
 
 # "PODs by X" -> pod_attribute
 POD_TYPE_ATTR_MAP = {
@@ -316,14 +335,30 @@ def load_goal_sheet(xlsb_path):
 
         pod_attribute = POD_TYPE_ATTR_MAP_NORM.get(_norm_goal_type(goal_type_raw), "")
 
-        tracking_start_raw = gv("Tracking Start")
-        tracking_end_raw   = gv("Tracking End")
-        start_yyyymm, end_yyyymm = month_pair_to_yyyymm(
-            tracking_start_raw, tracking_end_raw, anchor_year, anchor_month
-        )
-        if not start_yyyymm or not end_yyyymm:
-            skipped.append({"row_num": excel_row, "reason": "missing/invalid Tracking Start or End", "raw_row": raw_row})
-            continue
+        is_gsc = _norm_goal_type(goal_type_raw) in GSC_GOAL_TYPES
+
+        if is_gsc:
+            # GSC is tracked manually outside LPM -- the dummy ACS tracker is
+            # always a single month matching the file's close month, not
+            # whatever (if anything) is in the Tracking Start/End columns.
+            if not anchor_month:
+                skipped.append({
+                    "row_num": excel_row,
+                    "reason": "GSC row requires a resolvable close month (Goal Month cell) but none was found",
+                    "raw_row": raw_row,
+                })
+                continue
+            close_yyyymm = f"{anchor_year}{anchor_month:02d}"
+            start_yyyymm, end_yyyymm = close_yyyymm, close_yyyymm
+        else:
+            tracking_start_raw = gv("Tracking Start")
+            tracking_end_raw   = gv("Tracking End")
+            start_yyyymm, end_yyyymm = month_pair_to_yyyymm(
+                tracking_start_raw, tracking_end_raw, anchor_year, anchor_month
+            )
+            if not start_yyyymm or not end_yyyymm:
+                skipped.append({"row_num": excel_row, "reason": "missing/invalid Tracking Start or End", "raw_row": raw_row})
+                continue
 
         unsold_start_yyyymm, unsold_end_yyyymm = "", ""
         if unsold_present:
@@ -394,6 +429,7 @@ def load_goal_sheet(xlsb_path):
             "premise":              premise,
             "must_make":            must_make,
             "min_value":            min_value,
+            "is_gsc":               is_gsc,
         })
 
     return records, skipped, unsold_warnings, anchor_year, anchor_month
@@ -413,11 +449,14 @@ def group_key(rec):
     # column) still gates grouping -- a Must Make row and a regular row must
     # not land in the same Tracker just because every other field matches,
     # mirroring how SPP's spp_tier (Anchor/Flex) is part of its own group_key.
+    # is_gsc is part of the key too -- a GSC "dummy" tracker must never merge
+    # with a real ACS tracker just because division/period/etc happen to
+    # match, since it gets its own tracker-name suffix and achievement_min.
     return (
         rec["division"], rec["goal_type"], rec["goal_uom"],
         rec["start_yyyymm"], rec["end_yyyymm"],
         rec["unsold_start_yyyymm"], rec["unsold_end_yyyymm"],
-        rec["must_make"],
+        rec["must_make"], rec["is_gsc"],
     )
 
 
@@ -433,7 +472,7 @@ def group_records(records):
 
 
 def build_tracker_row(key, recs, anchor_year=None, anchor_month=None):
-    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, must_make = key
+    division, goal_type, goal_uom, start, end, unsold_start, unsold_end, must_make, is_gsc = key
     group = division_group(division)
     if group == "NYU":
         program_class = spp.PROGRAM_CLASS_MAP.get(must_make, "")
@@ -442,7 +481,7 @@ def build_tracker_row(key, recs, anchor_year=None, anchor_month=None):
     send_to_proof_date = send_to_proof_date_for(anchor_year, anchor_month, group)
     return {
         "goal_category":                  "Tracker",
-        "goal_name":                      division,
+        "goal_name":                      division + (" (GSC)" if is_gsc else ""),
         "tpm_nav_ref":                    "",
         "goal_type":                      goal_type,
         "goal_description":               "",
@@ -472,6 +511,12 @@ def build_tracker_row(key, recs, anchor_year=None, anchor_month=None):
 
 def build_ptg_row(rec):
     is_dist = rec["goal_type"] in spp.POD_ATTR_TYPES
+    # GSC's dummy ACS tracker always gets a 1-bottle achievement_min
+    # qualifier, regardless of whether the goal_type is a POD-attribute type.
+    if rec["is_gsc"]:
+        achievement_min = "1"
+    else:
+        achievement_min = rec["min_value"] if is_dist else ""
     return {
         "goal_category":                  "PTG",
         "goal_name":                      rec["ptg_name"],
@@ -498,7 +543,7 @@ def build_ptg_row(rec):
         "min_objective_target":           "1",
         "distribution_level_path":        SOD_CONFIG["distribution_level_path"],
         "pod_attribute":                  (rec["pod_attribute"] or "ProductId") if is_dist else "",
-        "achievement_min":                rec["min_value"] if is_dist else "",
+        "achievement_min":                achievement_min,
     }
 
 
