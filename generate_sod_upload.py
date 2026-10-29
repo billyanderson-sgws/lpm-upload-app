@@ -20,18 +20,19 @@ under anything else are skipped and flagged. The two groups are handled
 differently end to end:
   - NYM (NY Metro) rows go into LPM as Quotas: program_class is always the
     flat enum path "ProgramClass.Site.Quo".
-  - NYU (NY Upstate) rows go into LPM as SPP: program_class is derived from
-    the Must Make column via spp.PROGRAM_CLASS_MAP (Anchor -> ...Sppa, Flex
-    -> ...Sppf), the same convention SPP itself uses. An NYU row whose Must
-    Make isn't "Anchor" or "Flex" is skipped and flagged rather than
-    guessing. Must Make already gates Tracker grouping (see group_key), so
-    Anchor/Flex trackers are kept separate automatically.
-  - Exception: NYU divisions starting with "NYU SIG" (e.g. "NYU SIG
-    On/Off") are themselves plain Quotas, not SPP -- program_class is the
-    same "ProgramClass.Site.Quo" literal as NYM, and Must Make on these
-    rows is just a mandatory-goal flag (blank or the literal "Must Make"),
-    never an Anchor/Flex selector. It still gates Tracker grouping like any
-    other NYU division. See is_nyu_quota_division().
+  - NYU (NY Upstate) rows are a mixed bag -- the same "NYU SIG" division can
+    show up in two structurally different GOAL SHEETs from NY: an SPP file
+    where Must Make actually holds "Anchor"/"Flex", and a Metro-style Quota
+    file (e.g. "NYU SIG On/Off") where Must Make is just a plain
+    mandatory-goal flag (blank or the literal "Must Make") and Anchor/Flex
+    never appears. Division name alone can't tell these apart, so the split
+    is per row, on the Must Make value itself: a Must Make of "Anchor" or
+    "Flex" makes the row SPP (program_class via spp.PROGRAM_CLASS_MAP,
+    Anchor -> ...Sppa, Flex -> ...Sppf, same convention SPP itself uses);
+    anything else (blank or "Must Make") makes the row a plain Quota, same
+    "ProgramClass.Site.Quo" literal as NYM. Must Make still gates Tracker
+    grouping either way (see group_key), so Anchor/Flex/Must-Make/blank
+    trackers are all kept separate automatically.
   - Both groups now set send_to_proof to "SendStartingOnCalendarDate" (not
     SPP's "SendStartingInActive") and resolve send_to_proof_date from
     SEND_TO_PROOF_SCHEDULE, keyed by (anchor_year, anchor_month) -> group.
@@ -133,14 +134,12 @@ def division_group(division):
     return None
 
 
-# NYU divisions that are plain Quotas despite being NYU -- their Must Make
-# column is just a mandatory-goal flag, not an Anchor/Flex selector.
-NYU_QUOTA_PREFIXES = ("NYU SIG",)
-
-
-def is_nyu_quota_division(division):
-    d = (division or "").strip().upper()
-    return any(d.startswith(p) for p in NYU_QUOTA_PREFIXES)
+# Within the NYU group, a row is SPP only if Must Make actually holds
+# "Anchor" or "Flex" -- anything else (blank, or the plain "Must Make" flag
+# some NYU GOAL SHEETs use) means the row is really a Metro-style Quota that
+# happens to live in an NYU division (see module docstring).
+def is_nyu_spp_row(must_make):
+    return must_make in spp.PROGRAM_CLASS_MAP
 
 
 def send_to_proof_date_for(anchor_year, anchor_month, group):
@@ -329,14 +328,6 @@ def load_goal_sheet(xlsb_path):
             })
             continue
 
-        if group == "NYU" and not is_nyu_quota_division(division) and must_make not in spp.PROGRAM_CLASS_MAP:
-            skipped.append({
-                "row_num": excel_row,
-                "reason": f"NYU (SPP) row has no valid Anchor/Flex in Must Make: {must_make!r}",
-                "raw_row": raw_row,
-            })
-            continue
-
         goal_type = GOAL_TYPE_MAP_NORM.get(_norm_goal_type(goal_type_raw))
         if not goal_type:
             skipped.append({"row_num": excel_row, "reason": f"unknown Goal Type: {goal_type_raw!r}", "raw_row": raw_row})
@@ -490,7 +481,7 @@ def group_records(records):
 def build_tracker_row(key, recs, anchor_year=None, anchor_month=None):
     division, goal_type, goal_uom, start, end, unsold_start, unsold_end, must_make, is_gsc = key
     group = division_group(division)
-    if group == "NYU" and not is_nyu_quota_division(division):
+    if group == "NYU" and is_nyu_spp_row(must_make):
         program_class = spp.PROGRAM_CLASS_MAP.get(must_make, "")
     else:
         program_class = SOD_CONFIG["program_class"]
