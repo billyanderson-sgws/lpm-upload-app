@@ -19,9 +19,12 @@ unchanged. Only the row-reading step differs:
     unit="bottle"/"case"). Confirmed: these only populate on
     ACS/NACS/POD/NPOD (distribution) objectives. Qty feeds achievement_min
     (taking priority over the legacy col-21 "Qualifier" value, which SAM
-    exports leave blank for these objective types); Unit overrides the
-    Measure-derived goal_uom for that row ("bottle" -> "Bottles",
-    "case"/"cases" -> "Cases").
+    exports leave blank for these objective types). Unit is descriptive only
+    and does NOT drive goal_uom — goal_uom still comes from the Measure
+    column (col 10) like every other goal type, e.g. "Dec" -> "Cases". A
+    prior version of this generator let Unit override goal_uom, which broke
+    LPM uploads for POD goals (Measure="Dec"/Unit="Bottles" produced an
+    invalid "Bottles" UOM on a distribution goal).
 
 Usage:
     python generate_sam_spp_upload.py <sam_goal_file.xlsx> [output_csv] [collection_report.xlsx]
@@ -50,14 +53,6 @@ import generate_lpm_upload as spp  # reuse CSV schema, constants, and most of th
 CSV_COLUMNS = spp.CSV_COLUMNS
 
 SOURCE_SHEET_NAME = "SPP Export"
-
-# Distribution Qualifier Unit (col 24) -> LPM goal_uom
-DIST_QUALIFIER_UOM_MAP = {
-    "bottle":  "Bottles",
-    "bottles": "Bottles",
-    "case":    "Cases",
-    "cases":   "Cases",
-}
 
 
 def load_sam_spp_export(wb_path):
@@ -178,11 +173,6 @@ def load_sam_spp_export(wb_path):
             goal_uom = spp.UOM_MAP.get(measure, "")
             if not goal_uom and goal_type in spp.DISTRIBUTION_TYPES:
                 goal_uom = "Cases"
-
-        # Distribution Qualifier Unit overrides the Measure-derived UOM for
-        # distribution-type goals when recognized.
-        if goal_type in spp.DISTRIBUTION_TYPES and dist_qual_unit in DIST_QUALIFIER_UOM_MAP:
-            goal_uom = DIST_QUALIFIER_UOM_MAP[dist_qual_unit]
 
         # Distribution Qualifier Qty takes priority over the legacy Qualifier
         # column for distribution-type goals; falls back to col 21 otherwise.
