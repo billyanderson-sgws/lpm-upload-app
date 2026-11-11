@@ -42,6 +42,16 @@ CONFIG = {
     "distribution_level_path":        "Salesperson",
 }
 
+# Per-state override of recalculate_until_date (days to track credits),
+# falling back to CONFIG["recalculate_until_date"] when the state isn't listed.
+RECALCULATE_UNTIL_DATE_BY_STATE = {
+    "NV": "7",
+}
+
+
+def recalculate_until_date_for_state(state):
+    return RECALCULATE_UNTIL_DATE_BY_STATE.get(state, CONFIG["recalculate_until_date"])
+
 # Tracking Table "Objective Type" (col 4) -> LPM goal_type
 OBJECTIVE_TYPE_MAP = {
     "Volume (Cases)":   "VolumeCases",
@@ -856,7 +866,7 @@ def build_tracker_row(key, recs):
         "score_by_td_linx_customer_code": CONFIG["score_by_td_linx_customer_code"],
         "attainment_org_level":           CONFIG["attainment_org_level"],
         "goal_uom":                       goal_uom,
-        "recalculate_until_date":         CONFIG["recalculate_until_date"],
+        "recalculate_until_date":         recalculate_until_date_for_state(CURRENT_STATE),
         "exclude_from_os_sales_reports":  CONFIG["exclude_from_os_sales_reports"],
         "salesforce_collection_ids":      COLLECTION_LOOKUP.get(goal_group.lower(), CONFIG["salesforce_collection_ids"]),
         "program_class":                  program_class,
