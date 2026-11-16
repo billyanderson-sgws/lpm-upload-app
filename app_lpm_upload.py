@@ -396,7 +396,7 @@ def render_spp_tab():
                     fiscal_path = _APP_DIR / "Supplier Fiscal Start Month.xlsx"
                     gen.FISCAL_LOOKUP = gen.load_fiscal_lookup(str(fiscal_path)) if fiscal_path.is_file() else {}
 
-                    records, skipped, header_row = gen.load_tracking_table(gb_path)
+                    records, skipped, header_row, invalid_pod_attrs = gen.load_tracking_table(gb_path)
                     if not records:
                         raise ValueError("No valid records found in the Tracking Table after filtering.")
 
@@ -429,6 +429,7 @@ def render_spp_tab():
                     "skipped":          skipped,
                     "duplicate_names":  duplicate_names,
                     "anchor_flex_issues": anchor_flex_issues,
+                    "invalid_pod_attrs": invalid_pod_attrs,
                     "output_bytes":     output_bytes,
                     "skipped_bytes":    skipped_bytes,
                     "base_name":        os.path.splitext(goal_builder_file.name)[0],
@@ -465,7 +466,7 @@ def render_spp_tab():
                 st.warning(f"⚠️ {len(result['skipped'])} row(s) were skipped — review before uploading.")
                 with st.expander("View skipped rows"):
                     for entry in result["skipped"]:
-                        goal_group = (entry["raw_row"][0] or "") if entry["raw_row"] else ""
+                        goal_group = entry.get("goal_group") or ""
                         st.markdown(
                             f"**Row {entry['row_num']}** &nbsp;·&nbsp; "
                             f"`{goal_group}` &nbsp;·&nbsp; {entry['reason']}"
@@ -493,6 +494,18 @@ def render_spp_tab():
                 with st.expander("View Anchor/Flex issues"):
                     for issue in result["anchor_flex_issues"]:
                         st.markdown(f"`{issue['goal_group']}`: {issue['anchor']} Anchor / {issue['flex']} Flex")
+
+            if result.get("invalid_pod_attrs"):
+                st.warning(
+                    f"⚠️ {len(result['invalid_pod_attrs'])} row(s) have an invalid POD attribute — "
+                    "kept in the CSV but left blank, needs review."
+                )
+                with st.expander("View invalid POD attributes"):
+                    for entry in result["invalid_pod_attrs"]:
+                        st.markdown(
+                            f"**Row {entry['row_num']}** &nbsp;·&nbsp; "
+                            f"`{entry['goal_group']}` &nbsp;·&nbsp; POD attribute: `{entry['value']}`"
+                        )
 
             st.divider()
 

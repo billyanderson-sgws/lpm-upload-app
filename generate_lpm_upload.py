@@ -573,6 +573,78 @@ def load_fiscal_lookup(fiscal_path):
 # Load Tracking Table
 # ---------------------------------------------------------------------------
 
+def _normalize_header(value):
+    """Collapse a header cell to a plain lowercase string for matching,
+    regardless of embedded newlines, trailing colons, or parenthetical notes."""
+    if value is None:
+        return ""
+    s = re.sub(r"\s+", " ", str(value)).strip()
+    if s.endswith(":"):
+        s = s[:-1].strip()
+    return s.lower()
+
+
+# (field key, match predicate on the normalized header text). Templates have
+# been seen with the Tracking Table columns in different orders and with an
+# extra "Goal Name" column inserted -- never assume a fixed column position,
+# always resolve columns by header text.
+_TRACKING_TABLE_FIELD_MATCHERS = [
+    ("goal_group",         lambda h: h == "goal group"),
+    ("spp_tier",           lambda h: h == "spp tier"),
+    ("goal_bucket",        lambda h: h.startswith("goal bucket")),
+    ("obj_type",           lambda h: h == "objective type"),
+    ("start",              lambda h: h == "program posting start"),
+    ("end",                lambda h: h == "program posting end"),
+    ("basis_start",        lambda h: h == "basis period start"),
+    ("basis_end",          lambda h: h == "basis period end"),
+    ("unsold_prd",         lambda h: h == "unsold prd"),
+    ("measure",            lambda h: h == "measure"),
+    ("mkt_seg",            lambda h: h == "market segment goal"),
+    ("ptg_name",           lambda h: h.startswith("ptg name")),
+    ("goal_name",          lambda h: h == "goal name"),
+    ("level_detail",       lambda h: h == "level of detail"),
+    ("supplier",           lambda h: h == "supplier"),
+    ("selection",          lambda h: h.startswith("selection")),
+    ("applicable_premise", lambda h: h == "applicable premise"),
+    ("goal_distribution",  lambda h: h == "goal distribution"),
+    ("qualifier",          lambda h: h == "qualifier"),
+    ("min_goal_per_rep",   lambda h: h == "min goal per rep"),
+    ("pod_attr",           lambda h: h == "pod attribute"),
+    ("category",           lambda h: h == "category"),
+]
+
+# Every field above is required except these -- a sheet may legitimately lack
+# a "Category" column, and will have either "PTG Name" or "Goal Name" (not
+# necessarily both; some state templates use Goal Name in PTG Name's place).
+_TRACKING_TABLE_OPTIONAL_FIELDS = {"category", "ptg_name", "goal_name"}
+
+
+def resolve_tracking_table_columns(ws):
+    """Map each known Tracking Table field to its column number by matching
+    header text in row 1, instead of assuming a fixed column position."""
+    col = {}
+    for c in range(1, ws.max_column + 1):
+        h = _normalize_header(ws.cell(1, c).value)
+        if not h:
+            continue
+        for key, matcher in _TRACKING_TABLE_FIELD_MATCHERS:
+            if key not in col and matcher(h):
+                col[key] = c
+                break
+
+    required = [k for k, _ in _TRACKING_TABLE_FIELD_MATCHERS if k not in _TRACKING_TABLE_OPTIONAL_FIELDS]
+    missing = [k for k in required if k not in col]
+    if missing or ("ptg_name" not in col and "goal_name" not in col):
+        headers_found = [_normalize_header(ws.cell(1, c).value) for c in range(1, ws.max_column + 1)]
+        if "ptg_name" not in col and "goal_name" not in col:
+            missing = missing + ["ptg_name or goal_name"]
+        raise ValueError(
+            f"Could not find required Tracking Table column(s): {missing}\n"
+            f"Headers found: {headers_found}"
+        )
+    return col
+
+
 def load_tracking_table(wb_path):
     """
     Read the Tracking Table sheet and return (records, skipped_rows).
@@ -593,18 +665,23 @@ def load_tracking_table(wb_path):
     ws = wb["Tracking Table"]
     # Capture header row for the skipped-rows export
     header_row = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    col = resolve_tracking_table_columns(ws)
+    # Prefer an explicit "PTG Name" column; some state templates have no such
+    # column and use "Goal Name" to hold the same thing instead.
+    ptg_source_col = col.get("ptg_name") or col["goal_name"]
 
     records = []
     skipped = []  # each entry: {"row_num", "reason", "raw_row"}
+    invalid_pod_attrs = []  # each entry: {"row_num", "goal_group", "value"}
 
-    def make_skip(row_num, reason, raw):
-        return {"row_num": row_num, "reason": reason, "raw_row": raw}
+    def make_skip(row_num, reason, raw, goal_group=""):
+        return {"row_num": row_num, "reason": reason, "raw_row": raw, "goal_group": goal_group}
 
     for r in range(2, ws.max_row + 1):
         def cv(c):
             # Use formula workbook for text/dropdown columns to avoid stale cached values
-            # Use data_only workbook for date columns (cols 5-8) which need calculated results
-            if c in (5, 6, 7, 8):
+            # Use data_only workbook for date columns, which need calculated results
+            if c in (col["start"], col["end"], col["basis_start"], col["basis_end"]):
                 return ws.cell(r, c).value
             v = ws_formula.cell(r, c).value
             # If formula workbook returns a formula string, fall back to cached value
@@ -612,17 +689,17 @@ def load_tracking_table(wb_path):
                 return ws.cell(r, c).value
             return v
 
-        goal_group  = safe_str(cv(1))
-        spp_tier    = safe_str(cv(2))
-        goal_bucket = safe_str(cv(3))
-        obj_type    = safe_str(cv(4)).rstrip(" -")
-        start_raw   = cv(5)
-        end_raw          = cv(6)
-        basis_start_raw  = cv(7)
-        basis_end_raw    = cv(8)
-        unsold_prd  = safe_str(cv(9))
-        measure     = safe_str(cv(10))
-        mkt_seg     = cv(11)
+        goal_group  = safe_str(cv(col["goal_group"]))
+        spp_tier    = safe_str(cv(col["spp_tier"]))
+        goal_bucket = safe_str(cv(col["goal_bucket"]))
+        obj_type    = safe_str(cv(col["obj_type"])).rstrip(" -")
+        start_raw        = cv(col["start"])
+        end_raw          = cv(col["end"])
+        basis_start_raw  = cv(col["basis_start"])
+        basis_end_raw    = cv(col["basis_end"])
+        unsold_prd  = safe_str(cv(col["unsold_prd"]))
+        measure     = safe_str(cv(col["measure"]))
+        mkt_seg     = cv(col["mkt_seg"])
         # Excel stores percentage goals as decimals (7.44% -> 0.0744) but reports
         # the format as General when styles are applied via named styles — openpyxl
         # can't detect it. Heuristic: if value is a non-integer between -1 and 1
@@ -633,19 +710,16 @@ def load_tracking_table(wb_path):
             mkt_seg = round(mkt_seg * 100, 1 if mkt_seg < 0 else 2)
         elif isinstance(mkt_seg, (int, float)):
             mkt_seg = round(mkt_seg, 1 if mkt_seg < 0 else 2)
-        ptg_name_v  = cv(12)
-        level_detail = safe_str(cv(13))
-        supplier    = cv(14)
-        selection       = cv(15)
-        # cols 16-17, 19 not used
-        applicable_premise = safe_str(cv(18)).upper()
-        goal_distribution = safe_str(cv(20))
-        qualifier       = cv(21)  # Qualifier -> achievement_min (numeric only)
-        min_goal_per_rep = cv(22) # Min Goal per Rep -> min_objective_target
-        # col 23 = Min Cases, col 24 = Min Facings (not used)
-        pod_attr        = cv(25)
-        # col 26 not used
-        category        = safe_str(cv(27)) if ws.max_column >= 27 else ""
+        ptg_name_v  = cv(ptg_source_col)
+        level_detail = safe_str(cv(col["level_detail"]))
+        supplier    = cv(col["supplier"])
+        selection       = cv(col["selection"])
+        applicable_premise = safe_str(cv(col["applicable_premise"])).upper()
+        goal_distribution = safe_str(cv(col["goal_distribution"]))
+        qualifier       = cv(col["qualifier"])        # -> achievement_min (numeric only)
+        min_goal_per_rep = cv(col["min_goal_per_rep"]) # -> min_objective_target
+        pod_attr        = cv(col["pod_attr"])
+        category        = safe_str(cv(col["category"])) if "category" in col else ""
 
         raw_row = [ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
 
@@ -663,13 +737,13 @@ def load_tracking_table(wb_path):
 
         # Skip known objective types — log for prompt callout
         if obj_type in SKIP_OBJECTIVE_TYPES:
-            skipped.append(make_skip(r, f"skipped objective type: {obj_type!r}", raw_row))
+            skipped.append(make_skip(r, f"skipped objective type: {obj_type!r}", raw_row, goal_group))
             continue
 
         # Map objective type
         goal_type = OBJECTIVE_TYPE_MAP.get(obj_type)
         if not goal_type:
-            skipped.append(make_skip(r, f"unknown objective type: {obj_type!r}", raw_row))
+            skipped.append(make_skip(r, f"unknown objective type: {obj_type!r}", raw_row, goal_group))
             continue
 
         # Coerce goal_type based on unsold period:
@@ -691,7 +765,7 @@ def load_tracking_table(wb_path):
         if not name and level_detail == "Total":
             name = f"Total {obj_type}"
         if not name:
-            skipped.append(make_skip(r, "no PTG name, selection, or supplier", raw_row))
+            skipped.append(make_skip(r, "no PTG name, selection, or supplier", raw_row, goal_group))
             continue
 
         # Map UOM; revenue/GP types always blank; distribution types default to Cases
@@ -708,11 +782,15 @@ def load_tracking_table(wb_path):
         basis_start_yyyymm = to_yyyymm(basis_start_raw)
         basis_end_yyyymm   = to_yyyymm(basis_end_raw)
 
-        # Validate POD attribute
+        # Validate POD attribute -- an invalid value doesn't disqualify the row;
+        # flag it for review and leave pod_attribute blank on output instead.
         pod_attr_clean = normalize_pod_attribute(pod_attr)
-        if pod_attr_clean and pod_attr_clean not in VALID_POD_ATTRIBUTES:
-            skipped.append(make_skip(r, f"invalid POD attribute: {pod_attr_clean!r}", raw_row))
-            continue
+        pod_attr_invalid = bool(pod_attr_clean and pod_attr_clean not in VALID_POD_ATTRIBUTES)
+        if pod_attr_invalid:
+            invalid_pod_attrs.append({
+                "row_num": r, "goal_group": goal_group, "value": pod_attr_clean,
+            })
+            pod_attr_clean = ""
 
         records.append({
             "row_num":       r,
@@ -737,9 +815,10 @@ def load_tracking_table(wb_path):
             "selection":          safe_str(selection),
             "category":           category,
             "premise":            applicable_premise,
+            "pod_attribute_invalid": pod_attr_invalid,
         })
 
-    return records, skipped, header_row
+    return records, skipped, header_row, invalid_pod_attrs
 
 
 # ---------------------------------------------------------------------------
@@ -919,7 +998,7 @@ def build_ptg_row(rec):
         "distribution_target":            distribution_target,
         "min_objective_target":           min_objective_target,
         "distribution_level_path":        CONFIG["distribution_level_path"],
-        "pod_attribute":                  (rec["pod_attribute"] or "ProductId") if is_dist else "",
+        "pod_attribute":                  "" if rec["pod_attribute_invalid"] else ((rec["pod_attribute"] or "ProductId") if is_dist else ""),
         "achievement_min":                "" if is_volume else rec["qualifier"],
     }
 
@@ -1011,7 +1090,8 @@ def write_skipped_csv(skipped_path, skipped, header_row):
             writer.writerow([entry["reason"]] + entry["raw_row"])
 
 
-def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names=None, anchor_flex_issues=None):
+def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped,
+                   duplicate_names=None, anchor_flex_issues=None, invalid_pod_attrs=None):
     print()
     print("=" * 65)
     print("LPM Upload Generation Summary")
@@ -1026,7 +1106,7 @@ def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped
         print(f"  {'Row':<5}  {'Goal Group':<20}  Reason")
         print(f"  {'-'*5}  {'-'*20}  {'-'*40}")
         for entry in skipped:
-            print(f"  {entry['row_num']:<5}  {entry['raw_row'][0] or '':<20}  {entry['reason']}")
+            print(f"  {entry['row_num']:<5}  {entry['goal_group'] or '':<20}  {entry['reason']}")
     else:
         print("\nAll rows processed successfully — no skipped rows.")
     if duplicate_names:
@@ -1038,6 +1118,10 @@ def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped
         print(f"\n*** {len(anchor_flex_issues)} Goal Group(s) have an Anchor/Flex combo that doesn't match any allowed split ({allowed_str}) ***")
         for issue in anchor_flex_issues:
             print(f"  '{issue['goal_group']}': {issue['anchor']} Anchor / {issue['flex']} Flex")
+    if invalid_pod_attrs:
+        print(f"\n*** {len(invalid_pod_attrs)} row(s) have an invalid POD attribute — kept in the CSV but left blank, needs review ***")
+        for entry in invalid_pod_attrs:
+            print(f"  Row {entry['row_num']}  '{entry['goal_group']}'  POD attribute: {entry['value']!r}")
     print("=" * 65)
 
 
@@ -1125,7 +1209,7 @@ def main():
     print(f"Internal FISCAL sheet entries: {len(INTERNAL_FISCAL_LOOKUP)}")
 
     print(f"Reading: {input_path}")
-    records, skipped, header_row = load_tracking_table(input_path)
+    records, skipped, header_row, invalid_pod_attrs = load_tracking_table(input_path)
 
     if not records:
         print("ERROR: No valid records found in Tracking Table after filtering.", file=sys.stderr)
@@ -1139,7 +1223,8 @@ def main():
     if skipped:
         write_skipped_csv(skipped_path, skipped, header_row)
 
-    print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names, anchor_flex_issues)
+    print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped,
+                  duplicate_names, anchor_flex_issues, invalid_pod_attrs)
 
 
 if __name__ == "__main__":
