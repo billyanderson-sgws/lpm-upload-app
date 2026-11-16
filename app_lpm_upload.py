@@ -302,7 +302,21 @@ def render_spp_tab():
         st.session_state.spp_result         = None
 
     if goal_builder_file:
-        state = gen.derive_state_from_filename(goal_builder_file.name)
+        if st.session_state.get("spp_goal_groups") is None:
+            with st.spinner("Reading Goal Builder…"):
+                st.session_state.spp_goal_groups = extract_goal_groups(goal_builder_file.getvalue())
+
+        goal_groups = st.session_state.spp_goal_groups
+
+        state = ""
+        for group in goal_groups:
+            state = gen.derive_state_from_goal_group(group)
+            if state:
+                break
+        state_source = "sheet's Goal Group text"
+        if not state:
+            state = gen.derive_state_from_filename(goal_builder_file.name)
+            state_source = "first word of the filename"
 
         if collection_file:
             coll_source = collection_file.getvalue()
@@ -316,16 +330,7 @@ def render_spp_tab():
 
         collections = get_state_collections(state, coll_source) if coll_source else {}
         st.caption(f"Collection report: {coll_source_label}")
-        st.caption(
-            f"State detected: {state} (read from the first word of the Goal "
-            "Builder filename, e.g. 'SD SPP...' → 'SD')"
-        )
-
-        if st.session_state.get("spp_goal_groups") is None:
-            with st.spinner("Reading Goal Builder…"):
-                st.session_state.spp_goal_groups = extract_goal_groups(goal_builder_file.getvalue())
-
-        goal_groups = st.session_state.spp_goal_groups
+        st.caption(f"State detected: {state} (read from the {state_source})")
 
         if goal_groups and collections:
             with st.expander("Collection ID Mapping", expanded=True):
