@@ -316,6 +316,10 @@ def render_spp_tab():
 
         collections = get_state_collections(state, coll_source) if coll_source else {}
         st.caption(f"Collection report: {coll_source_label}")
+        st.caption(
+            f"State detected: {state} (read from the first word of the Goal "
+            "Builder filename, e.g. 'SD SPP...' → 'SD')"
+        )
 
         if st.session_state.get("spp_goal_groups") is None:
             with st.spinner("Reading Goal Builder…"):
@@ -584,8 +588,10 @@ def render_sam_spp_tab():
             state = samgen.spp.derive_state_from_goal_group(group)
             if state:
                 break
+        state_source = "sheet's Goal Group text"
         if not state:
             state = gen.derive_state_from_filename(sam_file.name)
+            state_source = "first word of the filename"
 
         if collection_file:
             coll_source = collection_file.getvalue()
@@ -599,6 +605,7 @@ def render_sam_spp_tab():
 
         collections = get_state_collections(state, coll_source) if coll_source else {}
         st.caption(f"Collection report: {coll_source_label}")
+        st.caption(f"State detected: {state} (read from the {state_source})")
 
         if goal_groups and collections:
             with st.expander("Collection ID Mapping", expanded=True):
