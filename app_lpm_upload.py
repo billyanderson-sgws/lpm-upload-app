@@ -50,9 +50,10 @@ def extract_goal_groups(xlsm_bytes):
         if "Tracking Table" not in wb.sheetnames:
             return []
         ws = wb["Tracking Table"]
+        col_idx = gen.resolve_tracking_table_columns(ws)["goal_group"] - 1
         groups, seen = [], set()
         for row in ws.iter_rows(min_row=2, values_only=True):
-            g = str(row[0]).strip() if row[0] else ""
+            g = str(row[col_idx]).strip() if row[col_idx] else ""
             if g and g not in seen:
                 seen.add(g)
                 groups.append(g)
@@ -381,8 +382,9 @@ def render_spp_tab():
                     state_from_sheet = ""
                     if "Tracking Table" in wb_for_fiscal.sheetnames:
                         tt = wb_for_fiscal["Tracking Table"]
+                        goal_group_col = gen.resolve_tracking_table_columns(tt)["goal_group"]
                         for r in range(2, tt.max_row + 1):
-                            ggv = tt.cell(r, 1).value
+                            ggv = tt.cell(r, goal_group_col).value
                             if ggv:
                                 state_from_sheet = gen.derive_state_from_goal_group(str(ggv))
                                 if state_from_sheet:
