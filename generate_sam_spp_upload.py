@@ -85,9 +85,10 @@ def load_sam_spp_export(wb_path):
 
     records = []
     skipped = []
+    fixed_spp_tiers = []  # each entry: {"row_num", "goal_group", "original", "fixed"}
 
-    def make_skip(row_num, reason, raw):
-        return {"row_num": row_num, "reason": reason, "raw_row": raw}
+    def make_skip(row_num, reason, raw, goal_group=""):
+        return {"row_num": row_num, "reason": reason, "raw_row": raw, "goal_group": goal_group}
 
     for r, (row_formula, row_data) in enumerate(zip(formula_rows, data_rows), start=2):
         def cv(c):
@@ -100,7 +101,13 @@ def load_sam_spp_export(wb_path):
             return v
 
         goal_group  = spp.safe_str(cv(1))
-        spp_tier    = spp.safe_str(cv(2))
+        spp_tier_raw = spp.safe_str(cv(2))
+        spp_tier, _tier_was_fixed = spp.normalize_spp_tier(spp_tier_raw)
+        if _tier_was_fixed:
+            fixed_spp_tiers.append({
+                "row_num": r, "goal_group": goal_group,
+                "original": spp_tier_raw, "fixed": spp_tier,
+            })
         goal_bucket = spp.safe_str(cv(3))
         obj_type    = spp.safe_str(cv(4)).rstrip(" -")
         start_raw        = cv(5)
@@ -141,12 +148,12 @@ def load_sam_spp_export(wb_path):
             continue
 
         if obj_type in spp.SKIP_OBJECTIVE_TYPES:
-            skipped.append(make_skip(r, f"skipped objective type: {obj_type!r}", raw_row))
+            skipped.append(make_skip(r, f"skipped objective type: {obj_type!r}", raw_row, goal_group))
             continue
 
         goal_type = spp.OBJECTIVE_TYPE_MAP.get(obj_type)
         if not goal_type:
-            skipped.append(make_skip(r, f"unknown objective type: {obj_type!r}", raw_row))
+            skipped.append(make_skip(r, f"unknown objective type: {obj_type!r}", raw_row, goal_group))
             continue
 
         _unsold_present = unsold_prd and unsold_prd.strip().upper() != "NONE"
@@ -164,7 +171,7 @@ def load_sam_spp_export(wb_path):
         if not name and level_detail == "Total":
             name = f"Total {obj_type}"
         if not name:
-            skipped.append(make_skip(r, "no PTG name, selection, or supplier", raw_row))
+            skipped.append(make_skip(r, "no PTG name, selection, or supplier", raw_row, goal_group))
             continue
 
         if goal_type in {"VolumeRevenue", "VolumeRevenueDREV", "VolumeGP", "VolumeCombos", "VolumePoints"}:
@@ -188,7 +195,7 @@ def load_sam_spp_export(wb_path):
 
         pod_attr_clean = spp.normalize_pod_attribute(pod_attr)
         if pod_attr_clean and pod_attr_clean not in spp.VALID_POD_ATTRIBUTES:
-            skipped.append(make_skip(r, f"invalid POD attribute: {pod_attr_clean!r}", raw_row))
+            skipped.append(make_skip(r, f"invalid POD attribute: {pod_attr_clean!r}", raw_row, goal_group))
             continue
 
         records.append({
@@ -207,6 +214,7 @@ def load_sam_spp_export(wb_path):
             "ptg_name":      name,
             "mkt_seg_goal":       spp._numeric_str(mkt_seg),
             "pod_attribute":      pod_attr_clean,
+            "pod_attribute_invalid": False,  # invalid POD attrs are skipped above, never reach here
             "min_goal_per_rep":   spp._numeric_str(min_goal_per_rep),
             "qualifier":          spp._numeric_str(qualifier),
             "goal_distribution":  goal_distribution,
@@ -216,7 +224,7 @@ def load_sam_spp_export(wb_path):
             "premise":            applicable_premise,
         })
 
-    return records, skipped, header_row
+    return records, skipped, header_row, fixed_spp_tiers
 
 
 def main():
@@ -284,7 +292,7 @@ def main():
     print(f"Internal FISCAL sheet entries: {len(spp.INTERNAL_FISCAL_LOOKUP)}")
 
     print(f"Reading: {input_path}")
-    records, skipped, header_row = load_sam_spp_export(input_path)
+    records, skipped, header_row, fixed_spp_tiers = load_sam_spp_export(input_path)
 
     if not records:
         print(f"ERROR: No valid records found in '{SOURCE_SHEET_NAME}' after filtering.", file=sys.stderr)
@@ -298,7 +306,8 @@ def main():
     if skipped:
         spp.write_skipped_csv(skipped_path, skipped, header_row)
 
-    spp.print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names, anchor_flex_issues)
+    spp.print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped, duplicate_names,
+                       anchor_flex_issues, fixed_spp_tiers=fixed_spp_tiers)
 
 
 if __name__ == "__main__":

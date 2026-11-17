@@ -37,38 +37,32 @@ import generate_sam_spp_upload as samgen
 
 SOURCE_SHEET_NAME = samgen.SOURCE_SHEET_NAME  # "SPP Export"
 
-# Canonical SPP Export header (columns 1-27), whitespace-normalized. Same as
-# check_spp_template.EXPECTED_HEADERS except columns 23/24, which the CR SAM
-# template repurposes for the Distribution Qualifier Qty/Unit fields.
-EXPECTED_HEADERS = [
-    "Goal Group",
-    "SPP Tier",
-    "Goal Bucket:",
-    "Objective Type",
-    "Program Posting Start",
-    "Program Posting End",
-    "Basis Period Start",
-    "Basis Period End",
-    "Unsold Prd",
-    "Measure",
-    "Market Segment Goal",
-    "PTG Name (Brand/Product Info ONLY):",
-    "Level of Detail",
-    "Supplier",
-    "Selection (select all that apply)",
-    "Customer Exclusions",
-    "Basis Item (if different than selection)",
-    "Applicable Premise",
-    "Size(s)",
-    "Goal Distribution",
-    "Qualifier",
-    "Min Goal per Rep",
-    "Distribution Qualifier Qty",
-    "Distribution Qualifier Unit",
-    "POD Attribute",
-    "Notes/Exclusions",
-    "Category",
+# The SAM-specific column that isn't part of the standard Tracking Table
+# matcher list (generate_lpm_upload.py has no use for it). Resolved by header
+# text the same way as everything else -- optional, since a file with no
+# match simply means Distribution Qualifier Qty is never used. Distribution
+# Qualifier Unit is not resolved here: it's descriptive only and never drives
+# generator behavior (see generate_sam_spp_upload.py's docstring), so there's
+# nothing for the checker to validate it against.
+_SAM_EXTRA_FIELD_MATCHERS = [
+    ("dist_qual_qty",  lambda h: h == "distribution qualifier qty"),
 ]
+
+
+def resolve_sam_columns(ws):
+    """Resolve both the standard Tracking Table columns (shared with
+    check_spp_template.py / generate_lpm_upload.py, by header text, not
+    position) and the SAM-specific Distribution Qualifier Qty column."""
+    col = dict(gen.resolve_tracking_table_columns(ws))
+    for c in range(1, ws.max_column + 1):
+        h = gen._normalize_header(ws.cell(1, c).value)
+        if not h:
+            continue
+        for key, matcher in _SAM_EXTRA_FIELD_MATCHERS:
+            if key not in col and matcher(h):
+                col[key] = c
+                break
+    return col
 
 
 def _norm_header(v):
@@ -173,25 +167,27 @@ def check_tracking_table(wb_path):
     ws = wb[SOURCE_SHEET_NAME]
     vstack_valid, vstack_same_supplier, vstack_any_supplier = _build_vstack_index(wb)
 
-    formula_rows = ws_formula.iter_rows(min_row=1, max_col=27, values_only=True)
-    data_rows    = ws.iter_rows(min_row=1, max_col=27, values_only=True)
-    header_row_formula = list(next(formula_rows))
-    header_row = list(next(data_rows))
+    # --- Resolve columns by header text, not fixed position -----------------
+    # Mirrors check_spp_template.py / generate_lpm_upload.resolve_tracking_table_columns()
+    # exactly, plus the two SAM-specific Distribution Qualifier columns, so
+    # reordered/renamed-extra-column "SPP Export" sheets are accepted the same
+    # way the standard SPP checker now accepts reordered Tracking Tables.
+    try:
+        col = resolve_sam_columns(ws)
+    except ValueError as exc:
+        header_issues.append(str(exc))
+        wb_formula.close()
+        wb.close()
+        return flags, header_issues, 0
 
-    # --- Header / missing-column check -------------------------------------
-    actual_headers = [_norm_header(v) for v in header_row[: len(EXPECTED_HEADERS)]]
-    if len(header_row) < len(EXPECTED_HEADERS):
-        header_issues.append(
-            f"'{SOURCE_SHEET_NAME}' has only {len(header_row)} column(s); expected {len(EXPECTED_HEADERS)}. "
-            "Columns are likely missing from the template."
-        )
-    for i, expected in enumerate(EXPECTED_HEADERS):
-        actual = actual_headers[i] if i < len(actual_headers) else ""
-        if actual != expected:
-            col_letter = openpyxl.utils.get_column_letter(i + 1)
-            header_issues.append(
-                f"Column {col_letter}: expected header \"{expected}\", found \"{actual or '(blank)'}\"."
-            )
+    max_col = ws.max_column
+    formula_rows = ws_formula.iter_rows(min_row=1, max_col=max_col, values_only=True)
+    data_rows    = ws.iter_rows(min_row=1, max_col=max_col, values_only=True)
+    header_row = list(next(data_rows))
+    next(formula_rows)
+
+    date_cols = {col["start"], col["end"], col["basis_start"], col["basis_end"]}
+    ptg_source_col = col.get("ptg_name") or col["goal_name"]
 
     end_dates_seen = {}  # yyyymm -> list of row_num
     tier_counts = {}     # goal_group -> {"Anchor": n, "Flex": n}
@@ -199,30 +195,31 @@ def check_tracking_table(wb_path):
 
     for r, (row_formula, row_data) in enumerate(zip(formula_rows, data_rows), start=2):
         def cv(c):
+            if c is None:
+                return None
             idx = c - 1
-            if c in (5, 6, 7, 8):
+            if c in date_cols:
                 return row_data[idx]
             v = row_formula[idx]
             if isinstance(v, str) and v.startswith("="):
                 return row_data[idx]
             return v
 
-        goal_group  = gen.safe_str(cv(1))
-        spp_tier    = gen.safe_str(cv(2))
-        goal_bucket = gen.safe_str(cv(3))
-        obj_type    = gen.safe_str(cv(4)).rstrip(" -")
-        start_raw   = cv(5)
-        end_raw     = cv(6)
-        mkt_seg     = cv(11)
-        ptg_name_v  = cv(12)
-        level_detail = gen.safe_str(cv(13))
-        supplier    = cv(14)
-        selection   = cv(15)
-        measure     = gen.safe_str(cv(10))
-        goal_distribution    = gen.safe_str(cv(20))
-        min_goal_per_rep_raw = cv(22)
-        dist_qual_qty        = cv(23)  # "Distribution Qualifier Qty"
-        dist_qual_unit       = gen.safe_str(cv(24)).lower()  # "Distribution Qualifier Unit"
+        goal_group  = gen.safe_str(cv(col["goal_group"]))
+        spp_tier    = gen.safe_str(cv(col["spp_tier"]))
+        goal_bucket = gen.safe_str(cv(col["goal_bucket"]))
+        obj_type    = gen.safe_str(cv(col["obj_type"])).rstrip(" -")
+        start_raw   = cv(col["start"])
+        end_raw     = cv(col["end"])
+        mkt_seg     = cv(col["mkt_seg"])
+        ptg_name_v  = cv(ptg_source_col)
+        level_detail = gen.safe_str(cv(col["level_detail"]))
+        supplier    = cv(col["supplier"])
+        selection   = cv(col["selection"])
+        measure     = gen.safe_str(cv(col["measure"]))
+        goal_distribution    = gen.safe_str(cv(col["goal_distribution"]))
+        min_goal_per_rep_raw = cv(col["min_goal_per_rep"])
+        dist_qual_qty        = cv(col.get("dist_qual_qty"))  # "Distribution Qualifier Qty"
 
         if not goal_group and ptg_name_v is None and selection is None:
             continue  # genuinely blank row — not a problem
@@ -250,10 +247,10 @@ def check_tracking_table(wb_path):
             end_dates_seen.setdefault(end_yyyymm, []).append(r)
 
         # --- Duplicated/concatenated text ------------------------------------
-        row_vals = [cv(c) for c in range(1, len(EXPECTED_HEADERS) + 1)]
-        for c, val in enumerate(row_vals, start=1):
+        for c in range(1, max_col + 1):
+            val = cv(c)
             if _is_self_concat(val):
-                header = EXPECTED_HEADERS[c - 1]
+                header = _norm_header(header_row[c - 1]) or f"Column {openpyxl.utils.get_column_letter(c)}"
                 flags.append(make_flag(
                     r, "warning", "duplicated_text",
                     f"\"{header}\" looks duplicated/concatenated: {val!r}"
@@ -352,17 +349,11 @@ def check_tracking_table(wb_path):
                         f"wasn't meant to be the actual Fixed Goal."
                     ))
 
-        # --- Distribution Qualifier Unit not recognized -----------------------
-        # generate_sam_spp_upload.py only overrides goal_uom for bottle/case
-        # (singular or plural); any other unit text is silently ignored and
-        # the row falls back to the Measure-derived default.
-        if dist_qual_unit and dist_qual_unit not in samgen.DIST_QUALIFIER_UOM_MAP:
-            flags.append(make_flag(
-                r, "warning", "unrecognized_dist_qualifier_unit",
-                f"Distribution Qualifier Unit {dist_qual_unit!r} isn't recognized (only "
-                "bottle/case are) — it will be silently ignored and the Measure-based UOM "
-                "default will be used instead."
-            ))
+        # NOTE: Distribution Qualifier Unit is descriptive only in
+        # generate_sam_spp_upload.py -- it never drives goal_uom (a prior
+        # version let it override goal_uom, which broke POD uploads, so that
+        # was removed; see that module's docstring). There's nothing to flag
+        # here since every Unit value, recognized or not, is ignored.
 
         # --- Distribution Qualifier Qty filled in without a recognized goal ---
         # Qty only feeds achievement_min on distribution-type rows; on a

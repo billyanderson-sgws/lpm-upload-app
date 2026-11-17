@@ -60,6 +60,7 @@ OBJECTIVE_TYPE_MAP = {
     "New ACS":          "DistributionNewACS",
     "ACS":              "DistributionACS",
     "Revenue":          "VolumeRevenue",
+    "EComm":            "VolumeRevenue",
     "DREV":             "VolumeRevenueDREV",
     "GP":               "VolumeGP",
     "Volume Combos":    "VolumeCombos",
@@ -131,6 +132,25 @@ PROGRAM_CLASS_MAP = {
     "Anchor": "ProgramClass.Site.Sppa",
     "Flex":   "ProgramClass.Site.Sppf",
 }
+
+
+def normalize_spp_tier(raw):
+    """
+    Fix case/whitespace variants of Anchor/Flex (e.g. a state tab that
+    overwrote the SPP Tier column with "ANCHOR"/"FLEX" in all caps) back to
+    the canonical casing PROGRAM_CLASS_MAP expects. Without this, the tier
+    silently fails to map, program_class comes out blank, and LPM imports
+    the goal as a local Program Class instead of Anchor/Flex -- with no
+    error anywhere in the pipeline.
+
+    Returns (normalized_value, was_fixed). "Quota"/"MySales"/blank are left
+    alone since they're legitimately unmapped (see ANCHOR_FLEX_ALLOWED).
+    """
+    s = raw.strip()
+    for canonical in PROGRAM_CLASS_MAP:
+        if s and s.upper() == canonical.upper() and s != canonical:
+            return canonical, True
+    return raw, False
 
 # Objective types and measures to skip entirely
 SKIP_OBJECTIVE_TYPES = {
@@ -673,6 +693,7 @@ def load_tracking_table(wb_path):
     records = []
     skipped = []  # each entry: {"row_num", "reason", "raw_row"}
     invalid_pod_attrs = []  # each entry: {"row_num", "goal_group", "value"}
+    fixed_spp_tiers = []  # each entry: {"row_num", "goal_group", "original", "fixed"}
 
     def make_skip(row_num, reason, raw, goal_group=""):
         return {"row_num": row_num, "reason": reason, "raw_row": raw, "goal_group": goal_group}
@@ -690,7 +711,13 @@ def load_tracking_table(wb_path):
             return v
 
         goal_group  = safe_str(cv(col["goal_group"]))
-        spp_tier    = safe_str(cv(col["spp_tier"]))
+        spp_tier_raw = safe_str(cv(col["spp_tier"]))
+        spp_tier, _tier_was_fixed = normalize_spp_tier(spp_tier_raw)
+        if _tier_was_fixed:
+            fixed_spp_tiers.append({
+                "row_num": r, "goal_group": goal_group,
+                "original": spp_tier_raw, "fixed": spp_tier,
+            })
         goal_bucket = safe_str(cv(col["goal_bucket"]))
         obj_type    = safe_str(cv(col["obj_type"])).rstrip(" -")
         start_raw        = cv(col["start"])
@@ -818,7 +845,7 @@ def load_tracking_table(wb_path):
             "pod_attribute_invalid": pod_attr_invalid,
         })
 
-    return records, skipped, header_row, invalid_pod_attrs
+    return records, skipped, header_row, invalid_pod_attrs, fixed_spp_tiers
 
 
 # ---------------------------------------------------------------------------
@@ -1091,7 +1118,8 @@ def write_skipped_csv(skipped_path, skipped, header_row):
 
 
 def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped,
-                   duplicate_names=None, anchor_flex_issues=None, invalid_pod_attrs=None):
+                   duplicate_names=None, anchor_flex_issues=None, invalid_pod_attrs=None,
+                   fixed_spp_tiers=None):
     print()
     print("=" * 65)
     print("LPM Upload Generation Summary")
@@ -1122,6 +1150,10 @@ def print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped
         print(f"\n*** {len(invalid_pod_attrs)} row(s) have an invalid POD attribute — kept in the CSV but left blank, needs review ***")
         for entry in invalid_pod_attrs:
             print(f"  Row {entry['row_num']}  '{entry['goal_group']}'  POD attribute: {entry['value']!r}")
+    if fixed_spp_tiers:
+        print(f"\n*** {len(fixed_spp_tiers)} row(s) had a miscased SPP Tier — auto-corrected, but fix the source template ***")
+        for entry in fixed_spp_tiers:
+            print(f"  Row {entry['row_num']}  '{entry['goal_group']}'  {entry['original']!r} -> {entry['fixed']!r}")
     print("=" * 65)
 
 
@@ -1209,7 +1241,7 @@ def main():
     print(f"Internal FISCAL sheet entries: {len(INTERNAL_FISCAL_LOOKUP)}")
 
     print(f"Reading: {input_path}")
-    records, skipped, header_row, invalid_pod_attrs = load_tracking_table(input_path)
+    records, skipped, header_row, invalid_pod_attrs, fixed_spp_tiers = load_tracking_table(input_path)
 
     if not records:
         print("ERROR: No valid records found in Tracking Table after filtering.", file=sys.stderr)
@@ -1224,7 +1256,7 @@ def main():
         write_skipped_csv(skipped_path, skipped, header_row)
 
     print_summary(output_path, skipped_path, total_trackers, total_ptgs, skipped,
-                  duplicate_names, anchor_flex_issues, invalid_pod_attrs)
+                  duplicate_names, anchor_flex_issues, invalid_pod_attrs, fixed_spp_tiers)
 
 
 if __name__ == "__main__":

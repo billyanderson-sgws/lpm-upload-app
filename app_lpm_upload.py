@@ -407,7 +407,7 @@ def render_spp_tab():
                     fiscal_path = _APP_DIR / "Supplier Fiscal Start Month.xlsx"
                     gen.FISCAL_LOOKUP = gen.load_fiscal_lookup(str(fiscal_path)) if fiscal_path.is_file() else {}
 
-                    records, skipped, header_row, invalid_pod_attrs = gen.load_tracking_table(gb_path)
+                    records, skipped, header_row, invalid_pod_attrs, fixed_spp_tiers = gen.load_tracking_table(gb_path)
                     if not records:
                         raise ValueError("No valid records found in the Tracking Table after filtering.")
 
@@ -441,6 +441,7 @@ def render_spp_tab():
                     "duplicate_names":  duplicate_names,
                     "anchor_flex_issues": anchor_flex_issues,
                     "invalid_pod_attrs": invalid_pod_attrs,
+                    "fixed_spp_tiers":  fixed_spp_tiers,
                     "output_bytes":     output_bytes,
                     "skipped_bytes":    skipped_bytes,
                     "base_name":        os.path.splitext(goal_builder_file.name)[0],
@@ -516,6 +517,19 @@ def render_spp_tab():
                         st.markdown(
                             f"**Row {entry['row_num']}** &nbsp;·&nbsp; "
                             f"`{entry['goal_group']}` &nbsp;·&nbsp; POD attribute: `{entry['value']}`"
+                        )
+
+            if result.get("fixed_spp_tiers"):
+                st.warning(
+                    f"⚠️ {len(result['fixed_spp_tiers'])} row(s) had a miscased SPP Tier (e.g. "
+                    "`ANCHOR`/`FLEX` instead of `Anchor`/`Flex`) — auto-corrected in the CSV, but fix "
+                    "the source template so it doesn't rely on this."
+                )
+                with st.expander("View auto-corrected SPP Tiers"):
+                    for entry in result["fixed_spp_tiers"]:
+                        st.markdown(
+                            f"**Row {entry['row_num']}** &nbsp;·&nbsp; "
+                            f"`{entry['goal_group']}` &nbsp;·&nbsp; `{entry['original']}` → `{entry['fixed']}`"
                         )
 
             st.divider()
@@ -687,7 +701,7 @@ def render_sam_spp_tab():
                         samgen.spp.load_fiscal_lookup(str(fiscal_path)) if fiscal_path.is_file() else {}
                     )
 
-                    records, skipped, header_row = samgen.load_sam_spp_export(sam_path)
+                    records, skipped, header_row, fixed_spp_tiers = samgen.load_sam_spp_export(sam_path)
                     if not records:
                         raise ValueError(f"No valid records found in the '{samgen.SOURCE_SHEET_NAME}' sheet after filtering.")
 
@@ -720,6 +734,7 @@ def render_sam_spp_tab():
                     "skipped":          skipped,
                     "duplicate_names":  duplicate_names,
                     "anchor_flex_issues": anchor_flex_issues,
+                    "fixed_spp_tiers":  fixed_spp_tiers,
                     "output_bytes":     output_bytes,
                     "skipped_bytes":    skipped_bytes,
                     "base_name":        os.path.splitext(sam_file.name)[0],
@@ -784,6 +799,19 @@ def render_sam_spp_tab():
                 with st.expander("View Anchor/Flex issues"):
                     for issue in result["anchor_flex_issues"]:
                         st.markdown(f"`{issue['goal_group']}`: {issue['anchor']} Anchor / {issue['flex']} Flex")
+
+            if result.get("fixed_spp_tiers"):
+                st.warning(
+                    f"⚠️ {len(result['fixed_spp_tiers'])} row(s) had a miscased SPP Tier (e.g. "
+                    "`ANCHOR`/`FLEX` instead of `Anchor`/`Flex`) — auto-corrected in the CSV, but fix "
+                    "the source template so it doesn't rely on this."
+                )
+                with st.expander("View auto-corrected SPP Tiers"):
+                    for entry in result["fixed_spp_tiers"]:
+                        st.markdown(
+                            f"**Row {entry['row_num']}** &nbsp;·&nbsp; "
+                            f"`{entry['goal_group']}` &nbsp;·&nbsp; `{entry['original']}` → `{entry['fixed']}`"
+                        )
 
             st.divider()
 

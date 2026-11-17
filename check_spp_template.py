@@ -22,40 +22,6 @@ except ImportError:
 
 import generate_lpm_upload as gen
 
-# Canonical Tracking Table header (columns 1-27), whitespace-normalized.
-# A file whose headers don't match this (missing/renamed/reordered columns)
-# means the template itself has been altered.
-EXPECTED_HEADERS = [
-    "Goal Group",
-    "SPP Tier",
-    "Goal Bucket:",
-    "Objective Type",
-    "Program Posting Start",
-    "Program Posting End",
-    "Basis Period Start",
-    "Basis Period End",
-    "Unsold Prd",
-    "Measure",
-    "Market Segment Goal",
-    "PTG Name (Brand/Product Info ONLY):",
-    "Level of Detail",
-    "Supplier",
-    "Selection (select all that apply)",
-    "Customer Exclusions",
-    "Basis Item (if different than selection)",
-    "Applicable Premise",
-    "Size(s)",
-    "Goal Distribution",
-    "Qualifier",
-    "Min Goal per Rep",
-    "Min Cases",
-    "Min Facings / Mentions",
-    "POD Attribute",
-    "Notes/Exclusions",
-    "Category",
-]
-
-
 def _norm_header(v):
     """Collapse whitespace/newlines so '<br>'-wrapped headers still compare cleanly."""
     if v is None:
@@ -153,23 +119,23 @@ def check_tracking_table(wb_path):
     ws = wb["Tracking Table"]
     vstack_valid, vstack_same_supplier, vstack_any_supplier = _build_vstack_index(wb)
 
-    # --- Header / missing-column check -------------------------------------
-    actual_headers = [_norm_header(ws.cell(1, c).value) for c in range(1, len(EXPECTED_HEADERS) + 1)]
-    if ws.max_column < len(EXPECTED_HEADERS):
-        header_issues.append(
-            f"Tracking Table has only {ws.max_column} column(s); expected {len(EXPECTED_HEADERS)}. "
-            "Columns are likely missing from the template."
-        )
-    for i, expected in enumerate(EXPECTED_HEADERS):
-        actual = actual_headers[i] if i < len(actual_headers) else ""
-        if actual != expected:
-            col_letter = openpyxl.utils.get_column_letter(i + 1)
-            header_issues.append(
-                f"Column {col_letter}: expected header \"{expected}\", found \"{actual or '(blank)'}\"."
-            )
+    # --- Resolve columns by header text, not fixed position -----------------
+    # Mirrors generate_lpm_upload.resolve_tracking_table_columns() exactly, so
+    # the checker accepts the same reordered/renamed-extra-column "new"
+    # templates the generator already handles. A file is only flagged here if
+    # a column the generator actually needs can't be found by header text.
+    try:
+        col = gen.resolve_tracking_table_columns(ws)
+    except ValueError as exc:
+        header_issues.append(str(exc))
+        wb_formula.close()
+        wb.close()
+        return flags, header_issues, 0
+
+    ptg_source_col = col.get("ptg_name") or col["goal_name"]
 
     def cv(r, c):
-        if c in (5, 6, 7, 8):
+        if c in (col["start"], col["end"], col["basis_start"], col["basis_end"]):
             return ws.cell(r, c).value
         v = ws_formula.cell(r, c).value
         if isinstance(v, str) and v.startswith("="):
@@ -181,20 +147,20 @@ def check_tracking_table(wb_path):
     row_count = 0
 
     for r in range(2, ws.max_row + 1):
-        goal_group  = gen.safe_str(cv(r, 1))
-        spp_tier    = gen.safe_str(cv(r, 2))
-        goal_bucket = gen.safe_str(cv(r, 3))
-        obj_type    = gen.safe_str(cv(r, 4)).rstrip(" -")
-        start_raw   = cv(r, 5)
-        end_raw     = cv(r, 6)
-        mkt_seg     = cv(r, 11)
-        ptg_name_v  = cv(r, 12)
-        level_detail = gen.safe_str(cv(r, 13))
-        supplier    = cv(r, 14)
-        selection   = cv(r, 15)
-        measure     = gen.safe_str(cv(r, 10))
-        goal_distribution   = gen.safe_str(cv(r, 20))
-        min_goal_per_rep_raw = cv(r, 22)
+        goal_group  = gen.safe_str(cv(r, col["goal_group"]))
+        spp_tier    = gen.safe_str(cv(r, col["spp_tier"]))
+        goal_bucket = gen.safe_str(cv(r, col["goal_bucket"]))
+        obj_type    = gen.safe_str(cv(r, col["obj_type"])).rstrip(" -")
+        start_raw   = cv(r, col["start"])
+        end_raw     = cv(r, col["end"])
+        mkt_seg     = cv(r, col["mkt_seg"])
+        ptg_name_v  = cv(r, ptg_source_col)
+        level_detail = gen.safe_str(cv(r, col["level_detail"]))
+        supplier    = cv(r, col["supplier"])
+        selection   = cv(r, col["selection"])
+        measure     = gen.safe_str(cv(r, col["measure"]))
+        goal_distribution   = gen.safe_str(cv(r, col["goal_distribution"]))
+        min_goal_per_rep_raw = cv(r, col["min_goal_per_rep"])
 
         if not goal_group and ptg_name_v is None and selection is None:
             continue  # genuinely blank row — not a problem
@@ -222,10 +188,10 @@ def check_tracking_table(wb_path):
             end_dates_seen.setdefault(end_yyyymm, []).append(r)
 
         # --- Duplicated/concatenated text ------------------------------------
-        for c in range(1, len(EXPECTED_HEADERS) + 1):
+        for c in range(1, ws.max_column + 1):
             val = cv(r, c)
             if _is_self_concat(val):
-                header = EXPECTED_HEADERS[c - 1]
+                header = _norm_header(ws.cell(1, c).value) or f"Column {openpyxl.utils.get_column_letter(c)}"
                 flags.append(make_flag(
                     r, "warning", "duplicated_text",
                     f"\"{header}\" looks duplicated/concatenated: {val!r}"
