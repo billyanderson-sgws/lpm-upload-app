@@ -119,7 +119,7 @@ def load_sam_spp_export(wb_path):
         mkt_seg     = cv(11)
         if isinstance(mkt_seg, str) and mkt_seg.strip().upper() == "FLAT":
             mkt_seg = 0
-        elif isinstance(mkt_seg, float) and -1 < mkt_seg < 1 and mkt_seg != 0:
+        elif isinstance(mkt_seg, float) and -1 <= mkt_seg <= 1 and mkt_seg != 0:
             mkt_seg = round(mkt_seg * 100, 1 if mkt_seg < 0 else 2)
         elif isinstance(mkt_seg, (int, float)):
             mkt_seg = round(mkt_seg, 1 if mkt_seg < 0 else 2)
